@@ -36,8 +36,8 @@ dist/win64/
   todolist4win_mysql.exe
   libcrypto-1_1-x64.dll
   libssl-1_1-x64.dll
-  <MSVC 运行库>          # 若缺失，安装 VC++ 2015-2022 x64 可再发行组件包即可
-  README.txt
+  msvcp140.dll  msvcp140_atomic_wait.dll  vcruntime140.dll  vcruntime140_1.dll
+  README.md              # 免安装版的运行说明
 ```
 
 ## 从源码构建
