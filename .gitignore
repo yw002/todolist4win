@@ -25,6 +25,8 @@ x64/
 /cursor_dump.py
 /*.png
 /tmp_profile/
+/tmp_ui/
+/__pycache__/
 /config.ini.bak-probe
 *.bak-probe
 
