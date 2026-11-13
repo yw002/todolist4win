@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup><Filter Include="tests"><UniqueIdentifier>{7E78B32F-B41A-45FC-B496-CA61BC87151F}</UniqueIdentifier></Filter><Filter Include="src"><UniqueIdentifier>{983BAFC2-82B5-4D88-8A39-43A604BC2F57}</UniqueIdentifier></Filter><Filter Include="third_party"><UniqueIdentifier>{9C1D4E22-55B6-4C7A-8F0E-2D3A4B5C6D7E}</UniqueIdentifier></Filter></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="TestMain.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="TaskRulesTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="SortWeightTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="StatisticsTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="TimeRangesTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="ModelsTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="TaskPaginationTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="TaskServiceTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="ConfigStoreTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="CredentialVaultTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="SettingsServiceTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="DataSourceSwitchStateTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="MySqlIntegrationTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="UiStateTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="HistoryPaginationTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="RepositoryContractTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="SqliteRepositoryTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="SqliteTransactionTests.cpp"><Filter>tests</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\TaskRules.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\SortWeight.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\Statistics.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\TimeRanges.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\TaskPagination.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\domain\HistoryPagination.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\config\AppConfig.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\config\AppPaths.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\config\ConfigStore.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\config\DpapiCredentialVault.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\config\SettingsService.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\app\AppController.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\app\Logger.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\common\Clock.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\core\DbWorker.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteConnection.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteErrors.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteSchema.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteUnitOfWork.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteTaskRepository.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteCategoryRepository.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteHistoryRepository.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\SqliteStatisticsRepository.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\third_party\sqlite\sqlite3.c"><Filter>third_party</Filter></ClCompile>
+    <ClCompile Include="..\src\common\*.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\core\*.cpp"><Filter>src</Filter></ClCompile>
+    <ClCompile Include="..\src\data\*.cpp"><Filter>src</Filter></ClCompile>
+  </ItemGroup>
+</Project>

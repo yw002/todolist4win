@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Platform>x64</Platform>
+    <!-- PlatformToolset must be resolved explicitly. If it is left empty, Microsoft.Cpp.props falls
+         back to the v100 (VS 2010) toolset and the build dies with MSB8020 - which is exactly what
+         happens on a machine that only has a newer Visual Studio installed, because the command
+         line MSBuild does not auto-retarget the way the IDE does. Probe which toolsets actually
+         exist instead of pinning one version, so the same project builds on VS 2022 (v143) and
+         VS 2026 / 18.x (v145) without editing anything. -->
+    <PlatformToolset Condition="'$(PlatformToolset)' == '' and Exists('$(VCTargetsPath)\Platforms\Win32\PlatformToolsets\v145\Toolset.props')">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == '' and Exists('$(VCTargetsPath)\Platforms\Win32\PlatformToolsets\v143\Toolset.props')">v143</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == '' and Exists('$(VCTargetsPath)\Platforms\Win32\PlatformToolsets\v142\Toolset.props')">v142</PlatformToolset>
+    <!-- Never let MSBuild silently fall back to the v100 (VS 2010) toolset. -->
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">v143</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <CharacterSet>Unicode</CharacterSet>
+    <ConfigurationType>Application</ConfigurationType>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <!-- Every source file is UTF-8 without BOM: the source and execution charsets must both be UTF-8,
+           otherwise MSVC decodes the Chinese literals with the local ANSI code page and the UI shows mojibake. -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <TargetMachine>MachineX64</TargetMachine>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

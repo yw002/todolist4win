@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{E7BD8B6B-EF6A-46B1-83DF-1C7F9DAC9B12}</ProjectGuid>
+    <RootNamespace>todolist4win_mysql_tests</RootNamespace>
+    <ProjectName>todolist4win_mysql_tests</ProjectName>
+  </PropertyGroup>
+  <!-- The MySQL integration suite is opt-in: pass -p:TodoEnableMySqlIntegrationTests=true
+       together with a working MySQL Connector/C++ 8.0 x64 installation. A default
+       build keeps the suite compiled out and never opens a connection. -->
+  <PropertyGroup Label="TestOptions">
+    <TodoEnableMySqlIntegrationTests Condition="'$(TodoEnableMySqlIntegrationTests)'==''">false</TodoEnableMySqlIntegrationTests>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration"><UseDebugLibraries>true</UseDebugLibraries><ConfigurationType>Application</ConfigurationType></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration"><UseDebugLibraries>false</UseDebugLibraries><ConfigurationType>Application</ConfigurationType></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- Only the integration build needs the Connector/C++ include and library paths. -->
+  <ImportGroup Label="MySqlConnector" Condition="'$(TodoEnableMySqlIntegrationTests)'=='true'">
+    <Import Project="..\build\MySqlDependencies.props" />
+  </ImportGroup>
+  <!-- SQLite is always required: the default suite runs the local-database contract without MySQL. -->
+  <ImportGroup Label="Sqlite"><Import Project="..\build\SqliteDependencies.props" /></ImportGroup>
+  <PropertyGroup><OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir><IntDir>$(SolutionDir)obj\tests\$(Configuration)\</IntDir><TargetName>todolist4win_mysql_tests</TargetName></PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(TodoEnableMySqlIntegrationTests)'=='true'">TODO_ENABLE_MYSQL_INTEGRATION_TESTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>shell32.lib;ole32.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'"><ClCompile><Optimization>MaxSpeed</Optimization></ClCompile><Link><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding></Link></ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="TestMain.cpp" />
+    <ClCompile Include="TaskRulesTests.cpp" />
+    <ClCompile Include="SortWeightTests.cpp" />
+    <ClCompile Include="StatisticsTests.cpp" />
+    <ClCompile Include="TimeRangesTests.cpp" />
+    <ClCompile Include="ModelsTests.cpp" />
+    <ClCompile Include="TaskPaginationTests.cpp" />
+    <ClCompile Include="TaskServiceTests.cpp" />
+    <ClCompile Include="ConfigStoreTests.cpp" />
+    <ClCompile Include="CredentialVaultTests.cpp" />
+    <ClCompile Include="SettingsServiceTests.cpp" />
+    <!-- T14: the hot switch is driven by AppController over a real DbWorker, so the state machine is
+         exercised offline through FakeUnitOfWorkFactory (no MySQL Connector, no Win32 UI). -->
+    <ClCompile Include="DataSourceSwitchStateTests.cpp" />
+    <ClCompile Include="MySqlIntegrationTests.cpp" />
+    <ClCompile Include="UiStateTests.cpp" />
+    <ClCompile Include="HistoryPaginationTests.cpp" />
+    <ClCompile Include="RepositoryContractTests.cpp" />
+    <ClCompile Include="SqliteRepositoryTests.cpp" />
+    <ClCompile Include="SqliteTransactionTests.cpp" />
+    <ClCompile Include="..\src\domain\TaskRules.cpp" />
+    <ClCompile Include="..\src\domain\SortWeight.cpp" />
+    <ClCompile Include="..\src\domain\Statistics.cpp" />
+    <ClCompile Include="..\src\domain\TimeRanges.cpp" />
+    <ClCompile Include="..\src\domain\TaskPagination.cpp" />
+    <!-- The service layer is exercised offline through FakeUnitOfWork. TaskService.cpp only depends
+         on domain rules plus the pure-virtual IUnitOfWorkFactory/IClock interfaces, so it pulls in
+         no MySQL Connector, no Win32 and no Direct2D. -->
+    <ClCompile Include="..\src\core\TaskService.cpp" />
+    <ClCompile Include="..\src\domain\HistoryPagination.cpp" />
+    <ClCompile Include="..\src\core\CategoryService.cpp" />
+    <ClCompile Include="..\src\core\HistoryService.cpp" />
+    <ClCompile Include="..\src\core\StatisticsService.cpp" />
+    <ClCompile Include="..\src\config\AppConfig.cpp" />
+    <ClCompile Include="..\src\config\AppPaths.cpp" />
+    <ClCompile Include="..\src\config\ConfigStore.cpp" />
+    <!-- T13: the DPAPI vault is the only Windows-dependent piece of the settings stack; it is
+         compiled here so the credential round trip and the corruption matrix run in the default
+         offline suite (crypt32.lib is linked above). -->
+    <ClCompile Include="..\src\config\DpapiCredentialVault.cpp" />
+    <ClCompile Include="..\src\config\SettingsService.cpp" />
+    <!-- The hot-switch tests need the controller itself plus its offline plumbing: the worker
+         (thread + completion queue, standard library only) and the logger (pointed at a temp file by
+         the test, so the real %LOCALAPPDATA% is never touched). AppController depends only on the
+         core services and on IUnitOfWorkFactory - no concrete MySQL/SQLite class. -->
+    <ClCompile Include="..\src\app\AppController.cpp" />
+    <ClCompile Include="..\src\app\Logger.cpp" />
+    <ClCompile Include="..\src\common\Clock.cpp" />
+    <ClCompile Include="..\src\core\DbWorker.cpp" />
+    <!-- SQLite data source: compiled into the default test project so the local contract runs
+         without MySQL. These are explicit because the wildcard below is integration-only. -->
+    <ClCompile Include="..\src\data\SqliteConnection.cpp" />
+    <ClCompile Include="..\src\data\SqliteErrors.cpp" />
+    <ClCompile Include="..\src\data\SqliteSchema.cpp" />
+    <ClCompile Include="..\src\data\SqliteUnitOfWork.cpp" />
+    <ClCompile Include="..\src\data\SqliteTaskRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteCategoryRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteHistoryRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteStatisticsRepository.cpp" />
+    <ClCompile Include="..\third_party\sqlite\sqlite3.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <ConformanceMode>false</ConformanceMode>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>Default</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <PreprocessorDefinitions>$(SqliteCompileDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemGroup>
+  <!-- The integration suite drives the real services, so it also needs the
+       common/core/data translation units that the default suite does not. -->
+  <ItemGroup Condition="'$(TodoEnableMySqlIntegrationTests)'=='true'">
+    <ClCompile Include="..\src\common\*.cpp" />
+    <ClCompile Include="..\src\core\*.cpp" Exclude="..\src\core\TaskService.cpp;..\src\core\CategoryService.cpp;..\src\core\HistoryService.cpp;..\src\core\StatisticsService.cpp" />
+    <ClCompile Include="..\src\data\*.cpp" Exclude="..\src\data\Sqlite*.cpp" />
+  </ItemGroup>
+  <ItemGroup><ClInclude Include="FakeUnitOfWork.h" /><ClInclude Include="FakeCredentialVault.h" /><ClInclude Include="..\src\domain\*.h" /><ClInclude Include="..\src\common\*.h" /><ClInclude Include="..\src\config\*.h" /><ClInclude Include="..\src\app\AppState.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

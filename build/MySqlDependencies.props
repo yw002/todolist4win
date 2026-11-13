@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Set MySqlConnectorRoot to an x64 MySQL Connector/C++ 8.0 installation.
+       Additional libraries vary by distribution; configure them explicitly. -->
+  <PropertyGroup>
+    <MySqlConnectorRoot Condition="'$(MySqlConnectorRoot)'=='' and '$(MYSQLCONNECTOR_ROOT)'!=''">$(MYSQLCONNECTOR_ROOT)</MySqlConnectorRoot>
+    <MySqlConnectorRoot Condition="'$(MySqlConnectorRoot)'==''">C:\Program Files\MySQL\MySQL Connector C++ 8.0</MySqlConnectorRoot>
+    <MySqlIncludeDir Condition="'$(MySqlIncludeDir)'==''">$(MySqlConnectorRoot)\include</MySqlIncludeDir>
+    <MySqlLibraryDir Condition="'$(MySqlLibraryDir)'==''">$(MySqlConnectorRoot)\lib64\vs14</MySqlLibraryDir>
+    <MySqlCppConnStaticLib Condition="'$(MySqlCppConnStaticLib)'==''">$(MySqlLibraryDir)\mysqlcppconn-static.lib</MySqlCppConnStaticLib>
+    <MySqlAdditionalLibraryDirs Condition="'$(MySqlAdditionalLibraryDirs)'==''"></MySqlAdditionalLibraryDirs>
+    <MySqlOpenSslLibs>$(MySqlLibraryDir)\libssl.lib;$(MySqlLibraryDir)\libcrypto.lib</MySqlOpenSslLibs>
+    <!-- The import libs live in lib64\vs14, but the DLLs they load are one level up in lib64. -->
+    <MySqlOpenSslDllDir Condition="'$(MySqlOpenSslDllDir)'==''">$(MySqlConnectorRoot)\lib64</MySqlOpenSslDllDir>
+    <!-- libssl.lib/libcrypto.lib in the MySQL package are IMPORT libraries (121 KB / 1 MB), so even with
+         mysqlcppconn-static.lib the app still loads the OpenSSL DLLs at startup. Without them Windows
+         aborts with "libssl-1_1-x64.dll / libcrypto-1_1-x64.dll not found". -->
+    <MySqlOpenSslRuntimeDlls>$(MySqlOpenSslDllDir)\libssl-1_1-x64.dll;$(MySqlOpenSslDllDir)\libcrypto-1_1-x64.dll</MySqlOpenSslRuntimeDlls>
+    <MySqlAdditionalDependencies Condition="'$(MySqlAdditionalDependencies)'==''">$(MySqlOpenSslLibs);ws2_32.lib;crypt32.lib;secur32.lib;shlwapi.lib;userenv.lib</MySqlAdditionalDependencies>
+    <!-- build_config.h (include/jdbc/cppconn/build_config.h:37) turns every exported JDBC symbol into
+         __declspec(dllimport) unless STATIC_CONCPP is defined, which breaks a static link with LNK2019. -->
+    <MySqlPreprocessorDefinitions Condition="'$(MySqlPreprocessorDefinitions)'==''">STATIC_CONCPP</MySqlPreprocessorDefinitions>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(MySqlIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>$(MySqlPreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(MySqlLibraryDir);$(MySqlAdditionalLibraryDirs);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(MySqlCppConnStaticLib);$(MySqlAdditionalDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateMySqlConnectorX64" BeforeTargets="ClCompile">
+    <Error Condition="!Exists('$(MySqlConnectorRoot)')" Text="MySQL Connector/C++ 8.0 x64 was not found at '$(MySqlConnectorRoot)'. Set MySqlConnectorRoot in build/MySqlDependencies.props or on the MSBuild command line." />
+    <Error Condition="!Exists('$(MySqlIncludeDir)\jdbc\mysql_driver.h')" Text="Legacy JDBC headers are missing under '$(MySqlIncludeDir)\jdbc'." />
+    <Error Condition="!Exists('$(MySqlCppConnStaticLib)')" Text="The x64 Legacy JDBC static library was not found: '$(MySqlCppConnStaticLib)'. Set MySqlCppConnStaticLib and all required x64 transitive dependencies explicitly." />
+  </Target>
+  <!-- Ship the OpenSSL DLLs next to the exe so a fresh build directory is runnable without manual copying. -->
+  <Target Name="CopyMySqlOpenSslRuntime" AfterTargets="Build">
+    <Warning Condition="!Exists('$(MySqlOpenSslDllDir)\libssl-1_1-x64.dll') or !Exists('$(MySqlOpenSslDllDir)\libcrypto-1_1-x64.dll')" Text="OpenSSL runtime DLLs were not found under '$(MySqlOpenSslDllDir)'. The built exe will fail to start with 'libssl-1_1-x64.dll / libcrypto-1_1-x64.dll not found'." />
+    <Copy SourceFiles="$(MySqlOpenSslRuntimeDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="Exists('$(MySqlOpenSslDllDir)\libssl-1_1-x64.dll') and Exists('$(MySqlOpenSslDllDir)\libcrypto-1_1-x64.dll')" />
+  </Target>
+</Project>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- SQLite 3 amalgamation wiring shared by the application and the offline test project.
+
+       The translation unit itself must still be listed explicitly in each .vcxproj, because
+       third_party\sqlite\sqlite3.c is outside the src\** wildcard and needs per-file metadata
+       (CompileAsC, warnings off, C conformance off). This props file only provides the include
+       directory, the compile definitions and an early validation target.
+
+       MSBuildThisFileDirectory is <repo>\build\, so "..\third_party\sqlite" resolves to
+       <repo>\third_party\sqlite for both the app (build\...) and the tests (..\build\...). -->
+  <PropertyGroup>
+    <SqliteRootDir Condition="'$(SqliteRootDir)'==''">$(MSBuildThisFileDirectory)..\third_party\sqlite</SqliteRootDir>
+    <SqliteIncludeDir>$(SqliteRootDir)</SqliteIncludeDir>
+    <SqliteCompileDefinitions>SQLITE_THREADSAFE=1;SQLITE_OMIT_LOAD_EXTENSION;SQLITE_DQS=0;SQLITE_OMIT_DEPRECATED;SQLITE_DEFAULT_FOREIGN_KEYS=1</SqliteCompileDefinitions>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SqliteIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateSqliteAmalgamation" BeforeTargets="ClCompile">
+    <Error Condition="!Exists('$(SqliteRootDir)\sqlite3.c')" Text="SQLite amalgamation not found at '$(SqliteRootDir)\sqlite3.c'." />
+    <Error Condition="!Exists('$(SqliteRootDir)\sqlite3.h')" Text="SQLite header not found at '$(SqliteRootDir)\sqlite3.h'." />
+  </Target>
+</Project>

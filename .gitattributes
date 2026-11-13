@@ -1,0 +1,27 @@
+# 统一按仓库内容原样检出；SQL 之外的换行差异交给 core.autocrlf 处理
+* text=auto
+
+*.c      text
+*.h      text
+*.cpp    text
+*.rc     text
+*.md     text
+*.bat    text eol=crlf
+*.sln     text eol=crlf
+*.vcxproj text eol=crlf
+*.props   text eol=crlf
+*.filters text eol=crlf
+
+# SQLite amalgamation 必须与上游逐字节一致，禁止任何换行归一化，
+# 否则 9MB 的单文件会在每次检出时产生整文件差异。
+third_party/sqlite/sqlite3.c   -text
+third_party/sqlite/sqlite3.h   -text
+third_party/sqlite/sqlite3ext.h -text
+
+# 二进制：不参与差异、不参与换行转换
+*.png    binary
+*.ico    binary
+*.exe    binary
+*.dll    binary
+*.lib    binary
+*.db     binary
