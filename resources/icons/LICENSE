@@ -1,0 +1,18 @@
+# Lucide Icons
+
+本目录下的 SVG 图标来自 [Lucide](https://github.com/lucide-icons/lucide)，版本 `lucide-static@0.469.0`，
+经 jsDelivr 下载（`https://cdn.jsdelivr.net/npm/lucide-static@0.469.0/icons/<name>.svg`），未做修改。
+
+- 许可：ISC License
+- 完整许可文本：见仓库根目录 `THIRD-PARTY-NOTICES.md` 中的 Lucide 一节
+
+| 文件 | 用途 |
+| --- | --- |
+| `pin.svg` | 标题栏「置顶」 |
+| `database.svg` | 标题栏「数据库」 |
+| `sun.svg` / `moon.svg` | 标题栏「主题」（按当前主题切换：深色显示 sun，浅色显示 moon） |
+| `rotate-cw.svg` | 标题栏「重试」 |
+| `minus.svg` / `square.svg` / `x.svg` | 窗口最小化 / 最大化 / 关闭 |
+
+图标统一为 24×24 viewBox、`fill="none"`、`stroke-width="2"`、圆头圆角，渲染时按当前主题的
+文字色替换描边色。

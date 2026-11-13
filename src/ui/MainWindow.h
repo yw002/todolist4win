@@ -40,6 +40,7 @@ private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
     void Layout() noexcept;
+    void UpdateTitleIcons();
     void Render();
     void RequestRender();
     void ShowFromTray(bool newTask);

@@ -56,19 +56,22 @@ ThemePalette Theme::MakePalette(bool dark) noexcept {
     //   panel       decorative strips: input row, footer
     //   panelStrong text fields, list rows, sidebar, popups - the surfaces text actually sits on
     // Because D2D composites each layer over the previous one, the effective opacity of a stack is
-    // 1 - (1-a1)(1-a2)...; a panelStrong of 0.84 on top of a 0.58 window reaches 0.93 and the
-    // desktop behind the window disappears completely. The values below keep the deepest stack near
-    // 0.80 so the blurred desktop stays visible while text keeps its contrast.
+    // 1 - (1-a1)(1-a2)...; a panelStrong of 0.62 on top of a 0.62 window reaches 0.86, and the
+    // desktop behind a text surface all but disappears while the bare window area stays glassy.
+    // The values below keep the deepest stack at or below that, so the blurred desktop stays visible
+    // while text keeps its contrast.
     // The two themes cannot share an alpha. The acrylic material takes its brightness from the
     // *system* theme, not the app theme: with Windows in light mode the material behind the window is
     // a pale grey, so a dark body at 0.34 washes out to a milky grey and the dark theme stops being
-    // dark. The dark surface therefore carries much more density than the light one.
-    p.window = dark ? Rgba(0x1D150F, 0.70F) : Rgba(0xFFFAF5, 0.30F);
-    p.panel = dark ? Rgba(0xFFFFFF, 0.08F) : Rgba(0xFFFFFF, 0.30F);
-    p.panelStrong = dark ? Rgba(0x2B2018, 0.72F) : Rgba(0xFFFFFF, 0.66F);
+    // dark. The dark surface therefore carries much more density than the light one. 0.56 was tried
+    // and measured: over a bright wallpaper the content area landed on rgb(125,114,106), which reads
+    // as muddy tan rather than dark. 0.62 keeps the glass without losing the dark identity.
+    p.window = dark ? Rgba(0x1D150F, 0.62F) : Rgba(0xFFFAF5, 0.21F);
+    p.panel = dark ? Rgba(0xFFFFFF, 0.07F) : Rgba(0xFFFFFF, 0.26F);
+    p.panelStrong = dark ? Rgba(0x2B2018, 0.62F) : Rgba(0xFFFFFF, 0.58F);
     // A floating surface sits on top of everything else, so its alpha is not a style choice - below
     // roughly 0.92 the content underneath becomes legible through the popup and both layers lose.
-    p.popup = dark ? Rgba(0x241A12, 0.97F) : Rgba(0xFFFDFB, 0.96F);
+    p.popup = dark ? Rgba(0x241A12, 0.94F) : Rgba(0xFFFDFB, 0.93F);
     p.border = dark ? Rgba(0xFFFFFF, 0.14F) : Rgba(0xFFFFFF, 0.85F);
     p.text = dark ? Rgba(0xF8F2EC) : Rgba(0x231A13);
     p.muted = dark ? Rgba(0xC2B2A2) : Rgba(0x8B7A6B);

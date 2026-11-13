@@ -86,14 +86,19 @@ void MainWindow::SetController(AppController& controller) {
     statisticsPage_ = std::make_unique<ui::StatisticsPage>(controller);
     navigation_ = std::make_unique<ui::NavigationView>(controller);
     navigation_->SetOnEditCategory([this](std::int64_t id) { OpenCategoryEditor(id); });
-    topmostButton_.SetText(L"置顶"); minimizeButton_.SetText(L"—"); maximizeButton_.SetText(L"□"); closeButton_.SetText(L"×"); themeButton_.SetText(L"主题"); connectionButton_.SetText(L"数据库"); retryButton_.SetText(L"重试");
+    // The label is kept only as a fallback for a render target without SVG support; the icon is what
+    // is actually drawn (Button::Paint skips the label once the artwork rendered).
+    topmostButton_.SetIcon(ui::IconId::Pin); minimizeButton_.SetIcon(ui::IconId::Minus); maximizeButton_.SetIcon(ui::IconId::Square); closeButton_.SetIcon(ui::IconId::Close);
+    themeButton_.SetIcon(ui::IconId::Sun); connectionButton_.SetIcon(ui::IconId::Database); retryButton_.SetIcon(ui::IconId::RotateCw);
+    retryButton_.SetText(L"重试"); connectionButton_.SetText(L"数据库"); topmostButton_.SetText(L"置顶"); themeButton_.SetText(L"主题");
+    minimizeButton_.SetText(L"—"); maximizeButton_.SetText(L"□"); closeButton_.SetText(L"×");
     topmostButton_.SetOnClick([this] { SetTopmost(!controller_->State().topmost); });
     minimizeButton_.SetOnClick([this] { ShowWindow(hwnd_, SW_MINIMIZE); });
     maximizeButton_.SetOnClick([this] { ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE); });
     closeButton_.SetOnClick([this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); });
     themeButton_.SetOnClick([this] { const bool dark = theme_.Palette().dark; controller_->SetThemeMode(dark ? ThemeMode::Light : ThemeMode::Dark); theme_.BeginTransition(controller_->State().themeMode, animationClock_.Now()); animationUntil_ = animationClock_.Now() + 0.35; RequestRender(); });
     connectionButton_.SetOnClick([this] { OpenConnectionSettings(); });
-    for (auto* button : {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_}) button->SetRadius(17.0F);
+    for (auto* button : {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_}) button->SetRadius(17.0F);
     closeButton_.SetDanger(true);
     SetTimer(hwnd_, 99, 5000, nullptr);
     // Retrying reuses the open worker/factory. It must NOT go through a config round trip: the
@@ -171,18 +176,30 @@ void MainWindow::Layout() noexcept {
     if (!hwnd_) return;
     const auto bounds = WindowBounds();
     const float width = bounds.right;
-    topmostButton_.SetBounds({width - 326, 12, width - 288, 46});
+    // Title bar: icons instead of words. Each control is a 34 DIP circle so the row reads as one
+    // rhythm; previously the widths followed the label length (38 / 64 / 74 / 70) and "置顶" was
+    // squeezed into the narrowest one, which is what looked broken.
+    retryButton_.SetBounds({width - 378, 12, width - 344, 46});
+    connectionButton_.SetBounds({width - 336, 12, width - 302, 46});
+    topmostButton_.SetBounds({width - 294, 12, width - 260, 46});
+    themeButton_.SetBounds({width - 252, 12, width - 218, 46});
+    // 16 DIP group gap, then the caption buttons, whose positions are dictated by the system's own
+    // hit-test strip and therefore stay where they were.
     minimizeButton_.SetBounds({width - 202, 12, width - 168, 46});
     maximizeButton_.SetBounds({width - 160, 12, width - 126, 46});
     closeButton_.SetBounds({width - 118, 12, width - 84, 46});
-    themeButton_.SetBounds({width - 280, 12, width - 210, 46});
-    connectionButton_.SetBounds({width - 408, 12, width - 334, 46});
-    retryButton_.SetBounds({width - 480, 12, width - 416, 46});
     if (navigation_) navigation_->SetBounds({16, 62, 208, bounds.bottom - 16});
     const D2D1_RECT_F content{220, 62, width - 16, bounds.bottom - 16};
     if (taskPage_) taskPage_->SetBounds(content);
     if (historyPage_) historyPage_->SetBounds(content);
     if (statisticsPage_) statisticsPage_->SetBounds(content);
+}
+
+void MainWindow::UpdateTitleIcons() {
+    // The theme button advertises the action, not the state: a dark palette shows a sun (click to go
+    // light) and a light palette shows a moon. Recomputed from the live palette on every frame so the
+    // icon follows the 300 ms cross-fade without a second hook in the toggle handler.
+    themeButton_.SetIcon(theme_.Palette().dark ? ui::IconId::Sun : ui::IconId::Moon);
 }
 
 void MainWindow::OnStateChanged() {
@@ -281,16 +298,25 @@ void MainWindow::Render() {
         else status = sourcePrefix + L"连接中";
         // A missing tray icon must stay visible: it changes what the close button does.
         if (!trayAvailable_) status += L" · 托盘不可用";
-        resources.DrawText(status, {180, 15, 420, 44}, resources.MutedBrush(), false, true);
+        // 420 DIP wide (180..600) because the longest realistic string - "MySQL · 只读 · 数据可能不是
+        // 最新 · 托盘不可用" - measures 254 DIP and the previous 240 DIP box clipped its tail. The right
+        // edge follows the window so the strip can never run under the action buttons at the 760 DIP
+        // minimum width, and never gets narrower than the old 240 DIP box.
+        const float statusRight = std::max(420.0F, std::min(600.0F, bounds.right - 390.0F));
+        resources.DrawText(status, {180, 15, statusRight, 44}, resources.MutedBrush(), false, true);
         topmostButton_.SetAccent(controller_->State().topmost);
+        UpdateTitleIcons();
         topmostButton_.Paint(context, resources); minimizeButton_.Paint(context, resources); maximizeButton_.Paint(context, resources); closeButton_.Paint(context, resources); themeButton_.Paint(context, resources); connectionButton_.Paint(context, resources); retryButton_.Paint(context, resources);
         navigation_->Paint(context, resources);
         taskPage_->Paint(context, resources); historyPage_->Paint(context, resources); statisticsPage_->Paint(context, resources);
         if (!controller_->State().errorMessage.empty()) {
             // This used to sit at y=66..96, directly on top of the new-task input row, and it was
             // painted after taskPage_->Paint() so it covered the text box. Keep it inside the bottom
-            // status strip, right-aligned, where nothing else is drawn.
-            const D2D1_RECT_F error{bounds.right - 460, bounds.bottom - 50, bounds.right - 28, bounds.bottom - 14};
+            // status strip, right-aligned, where nothing else is drawn. 612 DIP wide, because the
+            // longest credential error ("已保存的 MySQL 凭据无法解密，…") measures 434 DIP and the old
+            // 432 DIP box cut its last character. The text is right-aligned, so the widening only
+            // grows it leftwards into empty glass, never over the footer summary that ends at ~603.
+            const D2D1_RECT_F error{bounds.right - 640, bounds.bottom - 50, bounds.right - 28, bounds.bottom - 14};
             resources.DrawText(Dpi::Utf8ToWide(controller_->State().errorMessage), error, resources.DangerBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
         toast_.SetBounds(bounds);

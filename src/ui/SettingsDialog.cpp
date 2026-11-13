@@ -22,6 +22,14 @@
 
 namespace todo::ui {
 
+namespace {
+
+// One inset for every card: content used to end exactly on the card edge, so the fields and the action
+// row visually pressed against the rounded border. 24 matches the title's own left margin.
+constexpr float kCardInset = 24.0F;
+
+}  // namespace
+
 std::vector<TextBox*> SettingsDialog::Fields() noexcept { return {&field1_, &field2_, &field3_, &field4_, &field5_}; }
 std::vector<Control*> SettingsDialog::Clickables() noexcept {
     return {&field1_, &field2_, &field3_, &field4_, &field5_, &save_, &cancel_, &priorityButton_, &category_, &remove_,
@@ -135,45 +143,54 @@ void SettingsDialog::LayoutControls() noexcept {
     const float center = (bounds_.left + bounds_.right) / 2;
     const float left = center - 250, right = center + 250;
     // The connection card needs more room at the top: its title sits above the data source selector.
-    const float top = (bounds_.top + bounds_.bottom) / 2 - (mode_ == Mode::Connection ? 250.0F : 240.0F);
+    float top = (bounds_.top + bounds_.bottom) / 2 - (mode_ == Mode::Connection ? 250.0F : 240.0F);
+    // The local source carries three rows of content, so its card shrinks to 354 DIP (top + 20 ->
+    // top + 374) and is re-centred instead of reserving the height the five MySQL fields need. The
+    // card keeps its width, so switching the source only changes the height, never the column layout.
+    const bool localCard = mode_ == Mode::Connection && draft_.kind == DataSourceKind::Local;
+    if (localCard) top = (bounds_.top + bounds_.bottom) * 0.5F - 197.0F;
+    // Content stops one inset short of the card edge; the card itself keeps its old outline.
+    const float fieldRight = right - kCardInset;
     if (mode_ == Mode::Connection) {
         sourceLocal_.SetBounds({left + 130, top + 80, left + 250, top + 116});
         sourceMySql_.SetBounds({left + 258, top + 80, left + 352, top + 116});
-        field1_.SetBounds({left + 130, top + 130, right, top + 168});
-        field2_.SetBounds({left + 130, top + 186, right, top + 224});
-        field3_.SetBounds({left + 130, top + 242, right, top + 280});
-        field4_.SetBounds({left + 130, top + 298, right, top + 336});
-        field5_.SetBounds({left + 130, top + 354, right, top + 392});
-        // Local mode shows only the file row, one button and a hint, while the card keeps the height
-        // the five MySQL fields need - a card that changes height on every source toggle looks worse
-        // than whitespace. So that block is centred in the band between the source selector and the
-        // reserved error line: 59 DIP above and below reads as deliberate padding, whereas leaving it
-        // pinned to the top used to strand 186 DIP of empty card in the middle.
-        const float bandTop = top + 130;     // first row under the source selector
-        const float bandBottom = top + 396;  // the error line is reserved from here (save_.top - 34)
-        constexpr float kLocalBlockHeight = 148.0F;  // 46 file rows + 10 + 36 button + 16 + 40 hint
-        const float blockTop = bandTop + (bandBottom - bandTop - kLocalBlockHeight) * 0.5F;
-        openFolder_.SetBounds({left + 130, blockTop + 56, right, blockTop + 92});
+        field1_.SetBounds({left + 130, top + 130, fieldRight, top + 168});
+        field2_.SetBounds({left + 130, top + 186, fieldRight, top + 224});
+        field3_.SetBounds({left + 130, top + 242, fieldRight, top + 280});
+        field4_.SetBounds({left + 130, top + 298, fieldRight, top + 336});
+        field5_.SetBounds({left + 130, top + 354, fieldRight, top + 392});
+        // The local block is 148 DIP tall: 46 of file rows, 10, the 36 DIP button, 16, the 40 DIP hint.
+        // On the short local card it starts right under the source selector; on the MySQL card the
+        // button keeps its old position because the five fields are what is actually shown there.
+        const float openFolderTop = localCard ? top + 182.0F : top + 196.0F;
+        openFolder_.SetBounds({left + 130, openFolderTop, fieldRight, openFolderTop + 36});
         // The action row sits below a reserved error line (see Paint): 392 (last field) -> 398..424
-        // error -> 430..470 buttons. Shifting it up would let the error text overlap a field.
-        clearPassword_.SetBounds({left, top + 430, left + 190, top + 470});
-        cancel_.SetBounds({right - 270, top + 430, right - 140, top + 470});
-        save_.SetBounds({right - 128, top + 430, right, top + 470});
-        // Both source variants keep the same card, so toggling the source never makes it jump.
-        card_ = {left, top + 20, right, save_.Bounds().bottom + 18};
+        // error -> 430..470 buttons. Shifting it up would let the error text overlap a field. The
+        // local card is shorter, so its reserved line moves with it (282..310).
+        const float actionTop = localCard ? top + 316.0F : top + 430.0F;
+        // 170 wide rather than 190: with a 24 DIP inset on both sides the card is only 500 DIP, so
+        // "clear password" (190) and the cancel button that starts at right - 294 would overlap by
+        // 8 DIP - and both are visible at once on the MySQL tab when a password is stored. The label
+        // measures 98 DIP, so nothing is clipped by the narrower box.
+        clearPassword_.SetBounds({left + kCardInset, actionTop, left + kCardInset + 170, actionTop + 40});
+        cancel_.SetBounds({right - kCardInset - 270, actionTop, right - kCardInset - 140, actionTop + 40});
+        save_.SetBounds({right - kCardInset - 128, actionTop, right - kCardInset, actionTop + 40});
+        // Both source variants share the same width, so toggling the source never makes the card jump
+        // sideways; only the height changes, and only because the local content is genuinely shorter.
+        card_ = {left, top + 20, right, localCard ? top + 374.0F : save_.Bounds().bottom + 18.0F};
         return;
     }
-    field1_.SetBounds({left + 130, top + 62, right, top + 100});
-    field2_.SetBounds({left + 130, top + 116, right, mode_ == Mode::Task ? top + 206 : top + 154});
-    field3_.SetBounds({left + 130, top + 220, right, top + 258});
-    field4_.SetBounds({left + 130, top + 274, right, top + 312});
-    field5_.SetBounds({left + 130, top + 328, right, top + 366});
+    field1_.SetBounds({left + 130, top + 62, fieldRight, top + 100});
+    field2_.SetBounds({left + 130, top + 116, fieldRight, mode_ == Mode::Task ? top + 206 : top + 154});
+    field3_.SetBounds({left + 130, top + 220, fieldRight, top + 258});
+    field4_.SetBounds({left + 130, top + 274, fieldRight, top + 312});
+    field5_.SetBounds({left + 130, top + 328, fieldRight, top + 366});
     priorityButton_.SetBounds({left + 130, top + 274, left + 300, top + 312});
-    category_.SetBounds({left + 312, top + 274, right, top + 312});
-    remove_.SetBounds({left, top + 404, left + 150, top + 444});
-    cancel_.SetBounds({right - 270, top + 404, right - 140, top + 444});
-    save_.SetBounds({right - 128, top + 404, right, top + 444});
-    card_ = {field1_.Bounds().left - 130, field1_.Bounds().top - 62, field1_.Bounds().right, save_.Bounds().bottom + 18};
+    category_.SetBounds({left + 312, top + 274, fieldRight, top + 312});
+    remove_.SetBounds({left + kCardInset, top + 404, left + kCardInset + 150, top + 444});
+    cancel_.SetBounds({right - kCardInset - 270, top + 404, right - kCardInset - 140, top + 444});
+    save_.SetBounds({right - kCardInset - 128, top + 404, right - kCardInset, top + 444});
+    card_ = {left, top, right, save_.Bounds().bottom + 18};
 }
 
 void SettingsDialog::Hide() noexcept { if (focused_) focused_->OnFocus(false); visible_ = false; mode_ = Mode::None; focused_ = pressed_ = nullptr; categoryMenu_.Hide(); }
@@ -207,8 +224,10 @@ void SettingsDialog::OpenLocalFolder() {
     std::filesystem::create_directories(folder, ec);
     const HINSTANCE opened = ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(opened) <= 32) {
-        // Never silently do nothing: tell the user the exact folder so they can open it themselves.
-        error_ = L"无法打开数据目录，请手动定位：" + folder.wstring();
+        // Never silently do nothing, and never paste the folder into the message either: the path is
+        // already spelled out two lines above the error strip, and a 60+ character path would overflow
+        // the 452 DIP strip (the old wording measured 465 and lost its tail).
+        error_ = L"无法自动打开数据目录，请按上方路径手动打开";
     } else {
         error_.clear();
     }
@@ -371,17 +390,17 @@ void SettingsDialog::Paint(ID2D1DeviceContext& context, RenderResources& resourc
     resources.DrawGlassPanel(card_, 14, true);
     const std::wstring title = mode_ == Mode::Task ? L"编辑任务" : mode_ == Mode::Category ? (editCategoryId_ ? L"编辑分类" : L"新增分类") : L"数据源设置";
     resources.DrawText(title, {card_.left + 24, card_.top + 16, card_.right - 24, card_.top + 50}, nullptr, true);
-    auto label = [&](const TextBox& field, const std::wstring& text) { resources.DrawText(text, {card_.left + 18, field.Bounds().top, field.Bounds().left - 8, field.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING); };
+    auto label = [&](const TextBox& field, const std::wstring& text) { resources.DrawText(text, {card_.left + kCardInset, field.Bounds().top, field.Bounds().left - 8, field.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING); };
     if (mode_ == Mode::Task) {
         label(field1_, L"标题"); label(field2_, L"备注"); label(field3_, L"截止日期");
-        resources.DrawText(L"优先级", {card_.left + 18, priorityButton_.Bounds().top, priorityButton_.Bounds().left - 8, priorityButton_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        resources.DrawText(L"优先级", {card_.left + kCardInset, priorityButton_.Bounds().top, priorityButton_.Bounds().left - 8, priorityButton_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
         priorityButton_.SetText(priority_ == Priority::High ? L"高" : priority_ == Priority::Medium ? L"中" : L"低");
         std::wstring category = L"未分类";
         if (categoryId_) for (const auto& item : categories_) if (item.category.id == *categoryId_) category = Dpi::Utf8ToWide(item.category.name);
         category_.SetText(category);
     } else if (mode_ == Mode::Category) { label(field1_, L"名称"); label(field2_, L"颜色"); }
     else if (draft_.kind == DataSourceKind::MySql) {
-        resources.DrawText(L"数据源", {card_.left + 18, sourceLocal_.Bounds().top, sourceLocal_.Bounds().left - 8, sourceLocal_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        resources.DrawText(L"数据源", {card_.left + kCardInset, sourceLocal_.Bounds().top, sourceLocal_.Bounds().left - 8, sourceLocal_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
         label(field1_, L"主机"); label(field2_, L"端口"); label(field3_, L"用户名"); label(field4_, L"密码"); label(field5_, L"数据库");
     } else {
         // Local mode: no editable MySQL fields, only the real file path and a way to reveal it.
@@ -391,9 +410,9 @@ void SettingsDialog::Paint(ID2D1DeviceContext& context, RenderResources& resourc
         // function of the bounds LayoutControls just computed.
         const float fileTop = openFolder_.Bounds().top - 56.0F;  // 46 DIP of file rows + 10 DIP gap
         const float textLeft = card_.left + 130.0F;
-        const float textRight = card_.right - 16.0F;
-        resources.DrawText(L"数据源", {card_.left + 18, sourceLocal_.Bounds().top, sourceLocal_.Bounds().left - 8, sourceLocal_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
-        resources.DrawText(L"数据库文件", {card_.left + 18, fileTop, card_.left + 122, fileTop + 24}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        const float textRight = card_.right - kCardInset;
+        resources.DrawText(L"数据源", {card_.left + kCardInset, sourceLocal_.Bounds().top, sourceLocal_.Bounds().left - 8, sourceLocal_.Bounds().bottom}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        resources.DrawText(L"数据库文件", {card_.left + kCardInset, fileTop, card_.left + 122, fileTop + 24}, resources.MutedBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
         if (localPath_.empty()) {
             resources.DrawText(L"（路径不可用）", {textLeft, fileTop, textRight, fileTop + 46}, resources.TextBrush(), false, false);
         } else {
@@ -408,14 +427,14 @@ void SettingsDialog::Paint(ID2D1DeviceContext& context, RenderResources& resourc
         const float hintTop = openFolder_.Bounds().bottom + 16.0F;
         const HintLines hint = SplitIntoTwoLines(resources,
                                                  L"本地与 MySQL 的数据互相独立：切换只改变当前使用的数据库，不会复制、合并或删除任何一侧的数据。",
-                                                 (card_.right - 18.0F) - (card_.left + 18.0F));
-        const D2D1_RECT_F firstLine{card_.left + 18, hintTop, card_.right - 18, hintTop + kHintLineHeight};
-        const D2D1_RECT_F secondLine{card_.left + 18, hintTop + kHintLineHeight, card_.right - 18, hintTop + kHintLineHeight * 2.0F};
+                                                 (card_.right - kCardInset) - (card_.left + kCardInset));
+        const D2D1_RECT_F firstLine{card_.left + kCardInset, hintTop, card_.right - kCardInset, hintTop + kHintLineHeight};
+        const D2D1_RECT_F secondLine{card_.left + kCardInset, hintTop + kHintLineHeight, card_.right - kCardInset, hintTop + kHintLineHeight * 2.0F};
         resources.DrawText(hint.first, firstLine, resources.MutedBrush(), false, true);
         if (!hint.second.empty()) resources.DrawText(hint.second, secondLine, resources.MutedBrush(), false, true);
     }
     for (auto* field : Fields()) field->Paint(context, resources);
-    if (!error_.empty()) resources.DrawText(error_, {card_.left + 24, save_.Bounds().top - 34, card_.right - 24, save_.Bounds().top - 6}, resources.DangerBrush(), false, true);
+    if (!error_.empty()) resources.DrawText(error_, {card_.left + kCardInset, save_.Bounds().top - 34, card_.right - kCardInset, save_.Bounds().top - 6}, resources.DangerBrush(), false, true);
     save_.SetText(mode_ == Mode::Connection && draft_.kind == DataSourceKind::MySql ? L"测试并保存" : L"保存");
     save_.SetAccent(true); cancel_.SetText(L"取消");
     save_.Paint(context, resources); cancel_.Paint(context, resources);
