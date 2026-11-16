@@ -62,7 +62,18 @@ AppError TranslateSqliteResult(int resultCode) {
             }
             break;
     }
-    return {translated, message, resultCode, "SQLITE"};
+    return {translated, message, resultCode};
+}
+
+AppError TranslateImagePutError(const AppError& failure) {
+    if (failure.code == ErrorCode::None) return failure;
+    if (failure.nativeCode == SQLITE_TOOBIG) {
+        return {ErrorCode::ImageTooLarge, "图片超过本地数据库单次写入限制，请压缩后再粘贴", failure.nativeCode};
+    }
+    if ((failure.nativeCode & 0xFF) == SQLITE_CONSTRAINT) {
+        return {ErrorCode::ImageInvalid, "图片数据不符合本地数据库约束", failure.nativeCode};
+    }
+    return failure;
 }
 
 AppError InternalSqliteError() { return {ErrorCode::Internal, "本地数据库数据处理失败"}; }

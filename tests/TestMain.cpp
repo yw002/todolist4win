@@ -45,9 +45,6 @@ void RunSortWeightTests();
 void RunStatisticsTests();
 void RunTimeRangesTests();
 void RunConfigStoreTests();
-void RunCredentialVaultTests();
-void RunSettingsServiceTests();
-void RunDataSourceSwitchStateTests();
 void RunUiStateTests();
 void RunModelsTests();
 void RunTaskPaginationTests();
@@ -55,10 +52,13 @@ void RunTaskServiceTests();
 void RunHistoryPaginationTests();
 void RunSqliteRepositoryTests();
 void RunSqliteTransactionTests();
-void RunMySqlIntegrationTests();
+void RunBodyDocumentTests();
+void RunSha256Tests();
+void RunSqliteBodyImageTests();
+void RunBodyMigrationTests();
 
 int main() {
-    PrintLine("TodoListWin native tests (no MySQL connection unless integration tests are explicitly enabled)");
+    PrintLine("TodoListWin native tests (local SQLite only)");
     RunTaskRulesTests();
     RunSortWeightTests();
     RunStatisticsTests();
@@ -69,12 +69,12 @@ int main() {
     RunHistoryPaginationTests();
     RunSqliteRepositoryTests();
     RunSqliteTransactionTests();
+    RunBodyDocumentTests();
+    RunSha256Tests();
+    RunSqliteBodyImageTests();
+    RunBodyMigrationTests();
     RunConfigStoreTests();
-    RunCredentialVaultTests();
-    RunSettingsServiceTests();
-    RunDataSourceSwitchStateTests();
     RunUiStateTests();
-    RunMySqlIntegrationTests();
 
     PrintLine("");
     PrintLine("=== SUMMARY: " + std::to_string(g_total) + " checks, " + std::to_string(g_total - g_failures) +

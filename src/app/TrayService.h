@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <functional>
+#include <string>
 
 #include <shellapi.h>
 
@@ -16,6 +17,8 @@ class TrayService {
 public:
     ~TrayService();
     bool Create(HWND hwnd, HICON icon);
+    // Keeps the tooltip in sync with the user-chosen application name.
+    void SetTip(const std::wstring& tip);
     void Remove() noexcept;
     TrayAction HandleMessage(WPARAM wParam, LPARAM lParam);
 private:

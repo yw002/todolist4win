@@ -102,6 +102,14 @@ void SqliteStatement::BindText(int index, const std::string& value) {
 void SqliteStatement::BindNull(int index) {
     if (stmt_ != nullptr) sqlite3_bind_null(stmt_, index);
 }
+void SqliteStatement::BindBlob(int index, const std::vector<std::byte>& value) {
+    if (stmt_ == nullptr) return;
+    // A null pointer with length 0 is documented as a zero-length BLOB, which is why an explicit
+    // non-null placeholder is used for the empty case.
+    static constexpr std::byte kEmpty{0};
+    const void* data = value.empty() ? static_cast<const void*>(&kEmpty) : static_cast<const void*>(value.data());
+    sqlite3_bind_blob(stmt_, index, data, static_cast<int>(value.size()), SQLITE_TRANSIENT);
+}
 
 Result<bool> SqliteStatement::Step() {
     if (stmt_ == nullptr) return Result<bool>::Failure(InternalSqliteError());
@@ -134,6 +142,17 @@ std::string SqliteStatement::ColumnText(int index) const {
 }
 bool SqliteStatement::ColumnIsNull(int index) const {
     return stmt_ == nullptr || sqlite3_column_type(stmt_, index) == SQLITE_NULL;
+}
+std::vector<std::byte> SqliteStatement::ColumnBlob(int index) const {
+    if (stmt_ == nullptr) return {};
+    const void* data = sqlite3_column_blob(stmt_, index);
+    const int bytes = sqlite3_column_bytes(stmt_, index);
+    if (data == nullptr || bytes <= 0) return {};
+    const auto* first = static_cast<const unsigned char*>(data);
+    std::vector<std::byte> out;
+    out.reserve(static_cast<std::size_t>(bytes));
+    for (int i = 0; i < bytes; ++i) out.push_back(static_cast<std::byte>(first[i]));
+    return out;
 }
 void SqliteStatement::Reset() {
     if (stmt_ != nullptr) sqlite3_reset(stmt_);

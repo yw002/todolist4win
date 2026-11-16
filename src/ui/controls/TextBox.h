@@ -20,6 +20,11 @@ public:
     void SetOnSubmit(std::function<void()> callback);
     [[nodiscard]] const std::wstring& Text() const noexcept;
     [[nodiscard]] std::size_t Caret() const noexcept;
+    // Body editor hooks: it owns painting and block layout, but reuses this TextBox for character
+    // input, IME and character-level undo. InsertText is the text-paste path (one clipboard read per
+    // Ctrl+V happens in BodyEditor), SetCaret places the insertion point after a hit test.
+    void InsertText(const std::wstring& value);
+    void SetCaret(std::size_t index) noexcept;
     void SelectAll() noexcept;
     void Paint(ID2D1DeviceContext& context, RenderResources& resources) override;
     bool OnMouseDown(float x, float y, UINT keyFlags) override;

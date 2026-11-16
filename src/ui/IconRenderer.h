@@ -7,7 +7,7 @@ namespace todo::ui {
 // The Lucide (ISC, v0.469.0) outline set the title bar uses. The identifier names the artwork, not
 // the meaning: Sun and Moon are the same theme toggle in two states, and the caller picks which one
 // to draw. See resources/icons/LICENSE for provenance.
-enum class IconId { Pin, Database, Sun, Moon, RotateCw, Minus, Square, Close };
+enum class IconId { Pin, Database, Sun, Moon, RotateCw, Minus, Square, Restore, Close };
 
 /**
  * Draws an icon so that its artwork fills `box` (square icons are centred, never stretched).

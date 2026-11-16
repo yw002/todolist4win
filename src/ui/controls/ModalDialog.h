@@ -3,6 +3,9 @@
 #include <functional>
 #include <string>
 
+#include <d2d1_1.h>
+
+#include "ui/AnimationClock.h"
 #include "ui/controls/Button.h"
 
 namespace todo::ui {
@@ -15,6 +18,9 @@ public:
     ModalDialog() noexcept { visible_ = false; }
     void Show(const D2D1_RECT_F& window, std::wstring title, std::wstring message, std::function<void(bool)> callback);
     void Hide() noexcept;
+    // Advances the open/close transition; true while another frame is needed.
+    bool Tick(double now) noexcept;
+    void SetRequestFrame(std::function<void()> callback) { requestFrame_ = std::move(callback); }
     void Paint(ID2D1DeviceContext& context, RenderResources& resources) override;
     bool OnMouseDown(float x, float y, UINT keyFlags) override;
     bool OnMouseUp(float x, float y) override;
@@ -23,12 +29,19 @@ public:
     // Cursor support: true when a dialog button is under the given DIP position.
     [[nodiscard]] bool HitButton(float x, float y) const noexcept;
 private:
+    void FinishHide() noexcept;
     std::wstring title_;
     std::wstring message_;
     Button confirm_;
     Button cancel_;
     std::function<void(bool)> callback_;
     bool pressedButton_{false};
+    D2D1_RECT_F card_{0, 0, 0, 0};
+    AnimationClock animationClock_;
+    std::function<void()> requestFrame_;
+    double shownAt_{0.0};
+    double closingAt_{0.0};
+    bool closing_{false};
 };
 
 }  // namespace todo::ui

@@ -14,7 +14,7 @@ namespace {
 // (e.g. a stripped-down test host without COM) the documented %APPDATA%/%LOCALAPPDATA% variables
 // are a faithful equivalent. allowWorkingDirectory is only set for the roaming/config root so the
 // historical "%APPDATA% missing -> current_path()\TodoListWin" behaviour is not regressed; local
-// data and credentials must never land in the working directory.
+// data must never land in the working directory.
 std::filesystem::path KnownFolder(REFKNOWNFOLDERID id, const wchar_t* envName, bool allowWorkingDirectory) {
     PWSTR raw = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(id, KF_FLAG_CREATE, nullptr, &raw)) && raw != nullptr) {
@@ -64,19 +64,14 @@ AppPaths AppPaths::ForRoots(std::filesystem::path roamingRoot, std::filesystem::
 }
 
 std::filesystem::path AppPaths::ConfigPath() const { return roamingRoot / L"config.ini"; }
+std::filesystem::path AppPaths::AppNamePath() const { return roamingRoot / L"app-name.txt"; }
 std::filesystem::path AppPaths::LocalDataDirectory() const { return localRoot / L"data"; }
 std::filesystem::path AppPaths::LocalDatabasePath() const { return LocalDataDirectory() / L"todolist.db"; }
-std::filesystem::path AppPaths::CredentialsDirectory() const { return localRoot / L"credentials"; }
-std::filesystem::path AppPaths::CredentialsPath() const { return CredentialsDirectory() / L"mysql.cred"; }
 std::filesystem::path AppPaths::LogDirectory() const { return localRoot / L"Logs"; }
 std::filesystem::path AppPaths::LogPath() const { return LogDirectory() / L"todolist.log"; }
 
 Result<void> AppPaths::EnsureLocalDataDirectory() const {
     return EnsureDirectory(LocalDataDirectory(), "无法创建本地数据目录，请检查 %LOCALAPPDATA% 权限");
-}
-
-Result<void> AppPaths::EnsureCredentialsDirectory() const {
-    return EnsureDirectory(CredentialsDirectory(), "无法创建本地凭据目录，请检查 %LOCALAPPDATA% 权限");
 }
 
 }  // namespace todo

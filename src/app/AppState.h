@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "config/AppConfig.h"
+#include "domain/BodyDocument.h"
 #include "domain/Models.h"
 
 namespace todo {
@@ -17,15 +18,6 @@ struct AppState {
     Route route{Route::AllTasks};
     std::optional<std::int64_t> categoryId;
     ConnectionState connection{ConnectionState::Initializing};
-    // Which store the visible data came from. Mirrors AppController::Config().dataSource so pages
-    // and the status bar never have to reach for ConfigStore (design section 7).
-    DataSourceKind dataSource{DataSourceKind::Local};
-    // True from the moment a switch is requested until the new source has produced its first
-    // successful load. While set, every write entry point is closed and the status bar says so.
-    bool switching{false};
-    // Whether a MySQL password is stored for this user. The UI only ever shows "saved / not saved /
-    // cannot be decrypted"; the value itself never leaves SettingsService.
-    bool hasSavedCredential{false};
     Overlay overlay{Overlay::None};
     FocusedControl focusedControl{FocusedControl::None};
     TaskFilter filter;
@@ -43,6 +35,11 @@ struct AppState {
     std::vector<HistoryEvent> history;
     std::vector<CategoryCount> categories;
     StatsSnapshot stats;
+    // PNG bytes for the task currently open in the editor. CPU-side bytes are the only truth; the
+    // editor's ID2D1Bitmaps are derived views that can be rebuilt after a device loss. The error
+    // string is a human-readable summary (missing blobs / query failure), never an ErrorCode.
+    std::vector<BodyImage> editorImages;
+    std::string editorImageError;
     std::string errorMessage;
     std::string toast;
     BatchResult lastBatch;

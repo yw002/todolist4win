@@ -8,13 +8,14 @@
 #include "data/SqliteConnection.h"
 #include "data/SqliteHistoryRepository.h"
 #include "data/SqliteStatisticsRepository.h"
+#include "data/SqliteTaskImageRepository.h"
 #include "data/SqliteTaskRepository.h"
 
 namespace todo {
 
 // One unit of work == one sqlite3 connection. Begin() issues BEGIN IMMEDIATE so a write takes the
 // write lock up front (no read-then-upgrade deadlock). Rollback runs on destruction when a caller
-// forgets to commit. This mirrors MySqlUnitOfWork's contract exactly.
+// forgets to commit. This follows the unit-of-work contract exactly.
 class SqliteUnitOfWork final : public IUnitOfWork {
 public:
     explicit SqliteUnitOfWork(std::unique_ptr<SqliteConnection> connection);
@@ -26,6 +27,7 @@ public:
     ICategoryRepository& Categories() override;
     IHistoryRepository& History() override;
     IStatisticsRepository& Statistics() override;
+    ITaskImageRepository& Images() override;
 
 private:
     std::unique_ptr<SqliteConnection> connection_;
@@ -33,6 +35,7 @@ private:
     SqliteCategoryRepository categories_;
     SqliteHistoryRepository history_;
     SqliteStatisticsRepository statistics_;
+    SqliteTaskImageRepository images_;
     bool active_{false};
 };
 

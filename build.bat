@@ -12,24 +12,25 @@ set "ALL_PROXY="
 set "all_proxy="
 
 rem ---------------------------------------------------------------------------
-rem  todolist4win_mysql  build helper
+rem  todolist4win build helper
 rem
-rem  Double-click  : compiles the offline test project, runs it, then pauses.
+rem  Every build produces BOTH configurations, Debug and Release.
+rem    app  : bin\Debug\todolist4win.exe        bin\Release\todolist4win.exe
+rem    test : bin\Debug\todolist4win_tests.exe  bin\Release\todolist4win_tests.exe
+rem
+rem  Double-click  : builds both projects in both configurations, runs the tests, then pauses.
 rem  Command line  :
-rem    build.bat test           compile the test project and run it
-rem    build.bat app            compile the application (needs MySQL Connector/C++ 8.0 x64)
-rem    build.bat all            compile both projects
-rem    build.bat start          run the already built application
-rem    build.bat clean          delete bin\ and obj\
-rem
-rem  Append "Release" as a second argument to build Release instead of Debug:
-rem    build.bat app Release    -> bin\Release\todolist4win_mysql.exe
+rem    build.bat            same as "build.bat all"
+rem    build.bat test       build the test project in both configurations and run it
+rem    build.bat app        build the application in both configurations
+rem    build.bat all        build both projects in both configurations
+rem    build.bat start      run the already built application (Debug by default)
 rem    build.bat start Release
+rem    build.bat clean      delete bin\ and obj\
 rem ---------------------------------------------------------------------------
 
 set "ROOT=%~dp0"
-set "SLN=%ROOT%todolist4win_mysql.sln"
-set "CFG=Debug"
+set "SLN=%ROOT%todolist4win.sln"
 set "PLAT=x64"
 set "PAUSE_AT_END="
 if "%~1"=="" set "PAUSE_AT_END=1"
@@ -38,12 +39,7 @@ call :find_msbuild
 if errorlevel 1 exit /b 1
 
 set "TARGET=%~1"
-if "%TARGET%"=="" set "TARGET=test"
-
-rem Optional second argument selects the configuration. Debug stays the default because the test
-rem project is the double-click target and only the Debug binaries are meant for local iteration.
-if /i "%~2"=="release" set "CFG=Release"
-if /i "%~2"=="debug"   set "CFG=Debug"
+if "%TARGET%"=="" set "TARGET=all"
 
 if /i "%TARGET%"=="test"  goto :do_test
 if /i "%TARGET%"=="app"   goto :do_app
@@ -57,44 +53,44 @@ exit /b 1
 
 rem ---------------------------------------------------------------------------
 :do_test
-call :build todolist4win_mysql_tests
+call :build_both todolist4win_tests
 if errorlevel 1 goto :fail
 echo.
 echo === Running tests ===
-"%ROOT%bin\%CFG%\todolist4win_mysql_tests.exe"
-set "RC=%ERRORLEVEL%"
+"%ROOT%bin\Debug\todolist4win_tests.exe"
+if errorlevel 1 goto :fail_tests
+"%ROOT%bin\Release\todolist4win_tests.exe"
+if errorlevel 1 goto :fail_tests
 if defined PAUSE_AT_END pause
-exit /b %RC%
+exit /b 0
 
 :do_app
-call :find_connector
-call :announce_connector
-call :build todolist4win_mysql
-if errorlevel 1 (
-  echo.
-  echo If the error mentions mysql/jdbc.h or mysqlcppconn-static.lib, the MySQL
-  echo Connector/C++ 8.0 x64 package is missing. Install it to
-  echo   C:\Program Files\MySQL\MySQL Connector C++ 8.0
-  echo or set MYSQLCONNECTOR_ROOT to the extraction folder before running this script.
-  goto :fail
-)
+call :build_both todolist4win
+if errorlevel 1 goto :fail
 exit /b 0
 
 :do_all
-call :find_connector
-call :announce_connector
-call :build todolist4win_mysql_tests
+call :build_both todolist4win_tests
 if errorlevel 1 goto :fail
-call :build todolist4win_mysql
+call :build_both todolist4win
 if errorlevel 1 goto :fail
+echo.
+echo === Running tests ===
+"%ROOT%bin\Debug\todolist4win_tests.exe"
+if errorlevel 1 goto :fail_tests
+"%ROOT%bin\Release\todolist4win_tests.exe"
+if errorlevel 1 goto :fail_tests
+if defined PAUSE_AT_END pause
 exit /b 0
 
 :do_start
-if not exist "%ROOT%bin\%CFG%\todolist4win_mysql.exe" (
+set "CFG=Debug"
+if /i "%~2"=="release" set "CFG=Release"
+if not exist "%ROOT%bin\%CFG%\todolist4win.exe" (
   echo Application not built yet. Run: build.bat app
   goto :fail
 )
-"%ROOT%bin\%CFG%\todolist4win_mysql.exe"
+"%ROOT%bin\%CFG%\todolist4win.exe"
 exit /b %ERRORLEVEL%
 
 :do_clean
@@ -103,39 +99,33 @@ if exist "%ROOT%obj" rmdir /s /q "%ROOT%obj"
 echo Cleaned bin and obj.
 exit /b 0
 
+:fail_tests
+echo.
+echo [FAILED] tests
+if defined PAUSE_AT_END pause
+exit /b 1
+
 :fail
 if defined PAUSE_AT_END pause
 exit /b 1
 
 rem ---------------------------------------------------------------------------
+:build_both
+call :build %~1 Debug
+if errorlevel 1 exit /b 1
+call :build %~1 Release
+if errorlevel 1 exit /b 1
+exit /b 0
+
 :build
 echo.
-echo === Building %~1 [%CFG%^|%PLAT%] ===
-"%MSBUILD%" "%SLN%" /t:%~1 /p:Configuration=%CFG% /p:Platform=%PLAT% /v:minimal /nologo
+echo === Building %~1 [%~2^|%PLAT%] ===
+"%MSBUILD%" "%SLN%" /t:%~1 /p:Configuration=%~2 /p:Platform=%PLAT% /v:minimal /nologo
 if errorlevel 1 (
-  echo [FAILED] %~1
+  echo [FAILED] %~1 [%~2]
   exit /b 1
 )
-echo [OK] %~1
-exit /b 0
-
-rem ---------------------------------------------------------------------------
-:announce_connector
-if defined MYSQLROOT (
-  echo Using MySQL Connector/C++: %MYSQLROOT%
-  rem MSBuild reads this environment variable through MySqlDependencies.props.
-  set "MYSQLCONNECTOR_ROOT=%MYSQLROOT%"
-) else (
-  echo [WARN] MySQL Connector/C++ 8.0 x64 not found; the application target will fail.
-)
-exit /b 0
-
-rem ---------------------------------------------------------------------------
-:find_connector
-set "MYSQLROOT="
-if defined MYSQLCONNECTOR_ROOT if exist "%MYSQLCONNECTOR_ROOT%\include\jdbc\mysql_driver.h" set "MYSQLROOT=%MYSQLCONNECTOR_ROOT%"
-if not defined MYSQLROOT if exist "C:\Program Files\MySQL\MySQL Connector C++ 8.0\include\jdbc\mysql_driver.h" set "MYSQLROOT=C:\Program Files\MySQL\MySQL Connector C++ 8.0"
-if not defined MYSQLROOT if exist "%USERPROFILE%\MySQL\MySQL Connector C++ 8.0\include\jdbc\mysql_driver.h" set "MYSQLROOT=%USERPROFILE%\MySQL\MySQL Connector C++ 8.0"
+echo [OK] %~1 [%~2]
 exit /b 0
 
 rem ---------------------------------------------------------------------------

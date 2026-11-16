@@ -21,7 +21,9 @@
 namespace todo {
 namespace {
 
-constexpr const char* kColumns = "id,category_id,title,note,priority,due_time,completed,created_at,completed_at,sort_weight,revision";
+// body_doc is appended LAST so the existing 0..10 column indices in ReadTask stay untouched.
+// It is a compact JSON string (<=256 KiB); task_image.data is never part of a list/paging SELECT.
+constexpr const char* kColumns = "id,category_id,title,note,priority,due_time,completed,created_at,completed_at,sort_weight,revision,body_doc";
 
 using Binder = std::function<void(SqliteStatement&, int&)>;
 
@@ -50,6 +52,9 @@ std::optional<Task> ReadTask(SqliteStatement& row) {
     if (task.completed != task.completedAt.has_value()) return std::nullopt;
     task.sortWeight = row.ColumnDouble(9);
     task.revision = static_cast<std::uint64_t>(row.ColumnInt64(10));
+    // Verbatim, never parsed: a corrupt or newer-version document must not make this row unreadable.
+    // An empty string is the in-memory representation of SQL NULL (a legacy note-only task).
+    if (!row.ColumnIsNull(11)) task.bodyDoc = row.ColumnText(11);
     if (!TaskRules::ValidateTask(task).ok()) return std::nullopt;
     return task;
 }
@@ -124,8 +129,8 @@ Result<Task> SqliteTaskRepository::Create(const Task& task) {
         if (row.value()) maximum = last.ColumnDouble(0);
     }
     SqliteStatement insert(db_,
-                           "INSERT INTO task(category_id,title,note,priority,due_time,completed,created_at,completed_at,sort_weight,revision)"
-                           " VALUES (?,?,?,?,?,0,?,NULL,?,1);");
+                           "INSERT INTO task(category_id,title,note,priority,due_time,completed,created_at,completed_at,sort_weight,revision,body_doc)"
+                           " VALUES (?,?,?,?,?,0,?,NULL,?,1,?);");
     auto prepared = insert.Prepare();
     if (!prepared.ok()) return Result<Task>::Failure(prepared.error());
     if (task.categoryId) insert.BindInt64(1, *task.categoryId); else insert.BindNull(1);
@@ -135,6 +140,8 @@ Result<Task> SqliteTaskRepository::Create(const Task& task) {
     if (task.dueAt) insert.BindText(5, task.dueAt->ToString()); else insert.BindNull(5);
     insert.BindText(6, task.createdAt.ToString());
     insert.BindDouble(7, maximum == 0.0 ? SortWeight::kStep : SortWeight::NewTaskWeight(maximum));
+    // A fast-add command without a body keeps the legacy NULL: no bulk UPDATE of existing rows.
+    if (task.bodyDoc.empty()) insert.BindNull(8); else insert.BindText(8, task.bodyDoc);
     auto ran = insert.Run();
     if (!ran.ok()) return Result<Task>::Failure(ran.error());
     return GetByIdForUpdate(static_cast<std::int64_t>(sqlite3_last_insert_rowid(db_)));
@@ -144,7 +151,7 @@ Result<Task> SqliteTaskRepository::Update(const Task& task, std::uint64_t expect
     if (db_ == nullptr) return Result<Task>::Failure(InternalSqliteError());
     SqliteStatement update(db_,
                            "UPDATE task SET category_id=?,title=?,note=?,priority=?,due_time=?,completed=?,created_at=?,completed_at=?,"
-                           "sort_weight=?,revision=revision+1 WHERE id=? AND revision=?;");
+                           "sort_weight=?,body_doc=?,revision=revision+1 WHERE id=? AND revision=?;");
     auto prepared = update.Prepare();
     if (!prepared.ok()) return Result<Task>::Failure(prepared.error());
     if (task.categoryId) update.BindInt64(1, *task.categoryId); else update.BindNull(1);
@@ -156,8 +163,11 @@ Result<Task> SqliteTaskRepository::Update(const Task& task, std::uint64_t expect
     update.BindText(7, task.createdAt.ToString());
     if (task.completedAt) update.BindText(8, task.completedAt->ToString()); else update.BindNull(8);
     update.BindDouble(9, task.sortWeight);
-    update.BindInt64(10, task.id);
-    update.BindInt64(11, static_cast<std::int64_t>(expectedRevision));
+    // Whatever the caller loaded is written back verbatim, including a v>1 document it could not
+    // parse. TaskService is the only place that derives/replaces body_doc.
+    if (task.bodyDoc.empty()) update.BindNull(10); else update.BindText(10, task.bodyDoc);
+    update.BindInt64(11, task.id);
+    update.BindInt64(12, static_cast<std::int64_t>(expectedRevision));
     auto ran = update.Run();
     if (!ran.ok()) return Result<Task>::Failure(ran.error());
     if (sqlite3_changes(db_) != 1) return Result<Task>::Failure({ErrorCode::Conflict, "任务不存在或已被修改"});

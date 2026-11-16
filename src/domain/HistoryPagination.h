@@ -6,9 +6,9 @@
 
 namespace todo::HistoryPagination {
 
-// Pure, database-agnostic helpers for history keyset pagination. Both the MySQL and SQLite
-// repositories call these so the query signature and cursor contract cannot drift between them.
-// No Win32, SQL, MySQL or clock dependency lives here.
+// Pure, database-agnostic helpers for history keyset pagination. The SQLite history repository
+// calls these so the query signature and cursor contract stay in one place.
+// No Win32, SQL or clock dependency lives here.
 
 // Stable hash of every user-controlled history filter: keyword, category and time range.
 [[nodiscard]] std::string QuerySignature(const HistoryQuery& query);

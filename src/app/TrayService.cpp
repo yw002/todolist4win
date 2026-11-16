@@ -25,6 +25,11 @@ bool TrayService::Create(HWND hwnd, HICON icon) {
     if (added_) { data_.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &data_); }
     return added_;
 }
+void TrayService::SetTip(const std::wstring& tip) {
+    if (!added_) return;
+    wcsncpy_s(data_.szTip, tip.c_str(), _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &data_);
+}
 void TrayService::Remove() noexcept { if (added_) Shell_NotifyIconW(NIM_DELETE, &data_); added_ = false; hwnd_ = nullptr; }
 TrayAction TrayService::HandleMessage(WPARAM, LPARAM lParam) {
     const UINT event = LOWORD(lParam);

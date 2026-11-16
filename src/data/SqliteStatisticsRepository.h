@@ -7,8 +7,7 @@ struct sqlite3;
 namespace todo {
 
 // SQLite implementation of IStatisticsRepository. Completion rate is computed from the current
-// task rows (not the history events), and the 7-day trend counts COMPLETE events, exactly like the
-// MySQL queries.
+// task rows (not the history events), and the 7-day trend counts COMPLETE events.
 class SqliteStatisticsRepository final : public IStatisticsRepository {
 public:
     explicit SqliteStatisticsRepository(sqlite3* db);

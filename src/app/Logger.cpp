@@ -35,7 +35,7 @@ void Logger::Write(const char* level, const std::string& operation, std::uint64_
     char timestamp[32]{};
     std::snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02u %02u:%02u:%02u", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
     stream_ << timestamp << ' ' << level << " operation=" << operation << " request=" << requestId;
-    if (error) stream_ << " code=" << static_cast<int>(error->code) << " native=" << error->nativeCode << " sqlstate=" << error->sqlState;
+    if (error) stream_ << " code=" << static_cast<int>(error->code) << " native=" << error->nativeCode;
     stream_ << '\n';
     stream_.flush();
 }

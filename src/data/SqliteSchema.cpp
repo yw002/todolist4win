@@ -68,6 +68,26 @@ constexpr const char* kDdl[] = {
     "CREATE INDEX IF NOT EXISTS ix_history_trend ON history(operation_type, event_at);",
 };
 
+// Version 2 DDL. Both statements are idempotent on their own; the ADD COLUMN is guarded in C++ because
+// SQLite 3.45 has no ADD COLUMN IF NOT EXISTS. `mime` deliberately has no CHECK restricting it to
+// image/png: a future WebP/JPEG block must not be rejected by the storage layer.
+constexpr const char* kTaskImageDdl =
+    "CREATE TABLE IF NOT EXISTS task_image ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " task_id INTEGER NOT NULL,"
+    " image_key TEXT NOT NULL COLLATE BINARY,"
+    " mime TEXT NOT NULL DEFAULT 'image/png',"
+    " width INTEGER NOT NULL CHECK (width > 0 AND width <= 8192),"
+    " height INTEGER NOT NULL CHECK (height > 0 AND height <= 8192),"
+    " byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 4194304),"
+    " data BLOB NOT NULL CHECK (length(data) = byte_size),"
+    " created_at TEXT NOT NULL,"
+    " CONSTRAINT fk_task_image_task FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE ON UPDATE RESTRICT,"
+    " CONSTRAINT uq_task_image_key UNIQUE (task_id, image_key),"
+    " CONSTRAINT ck_task_image_key CHECK (length(image_key) = 64));";
+
+constexpr const char* kTaskImageIndexDdl = "CREATE INDEX IF NOT EXISTS ix_task_image_task ON task_image(task_id);";
+
 Result<std::int64_t> ScalarInt(sqlite3* db, const std::string& sql) {
     SqliteStatement statement(db, sql);
     auto prepared = statement.Prepare();
@@ -85,7 +105,9 @@ Result<bool> HasForeignTables(sqlite3* db) {
     SqliteStatement statement(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
     auto prepared = statement.Prepare();
     if (!prepared.ok()) return Result<bool>::Failure(prepared.error());
-    static constexpr std::array<const char*, 4> kKnown = {"schema_migration", "category", "task", "history"};
+    // task_image must be listed: a V2 first run interrupted after creating that table would otherwise
+    // be mistaken for a foreign database on the next startup.
+    static constexpr std::array<const char*, 5> kKnown = {"schema_migration", "category", "task", "history", "task_image"};
     for (;;) {
         auto row = statement.Step();
         if (!row.ok()) return Result<bool>::Failure(row.error());
@@ -135,7 +157,7 @@ Result<void> SqliteSchema::EnsureDatabaseAndSchema(const std::filesystem::path& 
     // 3. Version gate up front so a newer database is never touched.
     auto userVersion = ScalarInt(db, "PRAGMA user_version;");
     if (!userVersion.ok()) return Result<void>::Failure(userVersion.error());
-    if (userVersion.value() > 1) {
+    if (userVersion.value() > kSchemaVersion) {
         return Result<void>::Failure({ErrorCode::SchemaUnsupported, "本地数据库架构版本高于当前应用支持版本"});
     }
 
@@ -159,9 +181,23 @@ Result<void> SqliteSchema::EnsureDatabaseAndSchema(const std::filesystem::path& 
         if (!applied.ok()) { rollback(); return applied; }
     }
 
+    // 4b. Version-2 migration, still inside the same write transaction so a partial upgrade rolls
+    // back completely. SQLite DDL is transactional. Every step is idempotent: a
+    // crash after COMMIT but before PRAGMA user_version=2 simply replays all of them next startup.
+    auto hasBodyDoc = ScalarInt(db, "SELECT COUNT(*) FROM pragma_table_info('task') WHERE name='body_doc';");
+    if (!hasBodyDoc.ok()) { rollback(); return Result<void>::Failure(hasBodyDoc.error()); }
+    if (hasBodyDoc.value() == 0) {
+        auto altered = connection.Exec("ALTER TABLE task ADD COLUMN body_doc TEXT NULL;");
+        if (!altered.ok()) { rollback(); return altered; }
+    }
+    for (const char* ddl : {kTaskImageDdl, kTaskImageIndexDdl}) {
+        auto applied = connection.Exec(ddl);
+        if (!applied.ok()) { rollback(); return applied; }
+    }
+
     auto maxVersion = ScalarInt(db, "SELECT COALESCE(MAX(version),0) FROM schema_migration;");
     if (!maxVersion.ok()) { rollback(); return Result<void>::Failure(maxVersion.error()); }
-    if (maxVersion.value() > 1) {
+    if (maxVersion.value() > kSchemaVersion) {
         rollback();
         return Result<void>::Failure({ErrorCode::SchemaUnsupported, "本地数据库架构版本高于当前应用支持版本"});
     }
@@ -171,12 +207,16 @@ Result<void> SqliteSchema::EnsureDatabaseAndSchema(const std::filesystem::path& 
         auto inserted = connection.Exec("INSERT INTO schema_migration(version, applied_at) VALUES (1, datetime('now','localtime'));");
         if (!inserted.ok()) { rollback(); return inserted; }
     }
+    // Written only after every V2 statement succeeded. OR IGNORE keeps a replay harmless.
+    auto versionTwo = connection.Exec("INSERT OR IGNORE INTO schema_migration(version, applied_at) VALUES (2, datetime('now','localtime'));");
+    if (!versionTwo.ok()) { rollback(); return versionTwo; }
 
     auto committed = connection.Exec("COMMIT;");
     if (!committed.ok()) { rollback(); return committed; }
 
-    // 5. Persist the user_version for external diagnostics as well; harmless if already 1.
-    auto versioned = connection.Exec("PRAGMA user_version=1;");
+    // 5. Persist the user_version for external diagnostics as well; harmless if already 2. This is
+    // outside the transaction on purpose (PRAGMA writes are not rolled back with the DDL).
+    auto versioned = connection.Exec("PRAGMA user_version=" + std::to_string(kSchemaVersion) + ";");
     if (!versioned.ok()) return versioned;
     return Result<void>::Success();
 }

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{E7BD8B6B-EF6A-46B1-83DF-1C7F9DAC9B12}</ProjectGuid>
+    <RootNamespace>todolist4win_tests</RootNamespace>
+    <ProjectName>todolist4win_tests</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration"><UseDebugLibraries>true</UseDebugLibraries><ConfigurationType>Application</ConfigurationType></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration"><UseDebugLibraries>false</UseDebugLibraries><ConfigurationType>Application</ConfigurationType></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="Sqlite"><Import Project="..\build\SqliteDependencies.props" /></ImportGroup>
+  <PropertyGroup><OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir><IntDir>$(SolutionDir)obj\tests\$(Configuration)\</IntDir><TargetName>todolist4win_tests</TargetName></PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>shell32.lib;ole32.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'"><ClCompile><Optimization>MaxSpeed</Optimization></ClCompile><Link><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding></Link></ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="TestMain.cpp" />
+    <ClCompile Include="TaskRulesTests.cpp" />
+    <ClCompile Include="SortWeightTests.cpp" />
+    <ClCompile Include="StatisticsTests.cpp" />
+    <ClCompile Include="TimeRangesTests.cpp" />
+    <ClCompile Include="ModelsTests.cpp" />
+    <ClCompile Include="TaskPaginationTests.cpp" />
+    <ClCompile Include="TaskServiceTests.cpp" />
+    <ClCompile Include="ConfigStoreTests.cpp" />
+    <ClCompile Include="UiStateTests.cpp" />
+    <ClCompile Include="HistoryPaginationTests.cpp" />
+    <ClCompile Include="RepositoryContractTests.cpp" />
+    <ClCompile Include="SqliteRepositoryTests.cpp" />
+    <ClCompile Include="SqliteTransactionTests.cpp" />
+    <ClCompile Include="BodyDocumentTests.cpp" />
+    <ClCompile Include="Sha256Tests.cpp" />
+    <ClCompile Include="BodyImageRepositoryContractTests.cpp" />
+    <ClCompile Include="SqliteBodyImageTests.cpp" />
+    <ClCompile Include="BodyMigrationTests.cpp" />
+    <ClCompile Include="..\src\domain\TaskRules.cpp" />
+    <ClCompile Include="..\src\domain\Json.cpp" />
+    <ClCompile Include="..\src\domain\BodyDocument.cpp" />
+    <ClCompile Include="..\src\common\Sha256.cpp" />
+    <ClCompile Include="..\src\domain\SortWeight.cpp" />
+    <ClCompile Include="..\src\domain\Statistics.cpp" />
+    <ClCompile Include="..\src\domain\TimeRanges.cpp" />
+    <ClCompile Include="..\src\domain\TaskPagination.cpp" />
+    <ClCompile Include="..\src\core\TaskService.cpp" />
+    <ClCompile Include="..\src\domain\HistoryPagination.cpp" />
+    <ClCompile Include="..\src\core\CategoryService.cpp" />
+    <ClCompile Include="..\src\core\HistoryService.cpp" />
+    <ClCompile Include="..\src\core\StatisticsService.cpp" />
+    <ClCompile Include="..\src\config\AppConfig.cpp" />
+    <ClCompile Include="..\src\config\AppPaths.cpp" />
+    <ClCompile Include="..\src\config\ConfigStore.cpp" />
+    <ClCompile Include="..\src\app\AppController.cpp" />
+    <ClCompile Include="..\src\app\Logger.cpp" />
+    <ClCompile Include="..\src\common\Clock.cpp" />
+    <ClCompile Include="..\src\core\DbWorker.cpp" />
+    <ClCompile Include="..\src\data\SqliteConnection.cpp" />
+    <ClCompile Include="..\src\data\SqliteErrors.cpp" />
+    <ClCompile Include="..\src\data\SqliteSchema.cpp" />
+    <ClCompile Include="..\src\data\SqliteUnitOfWork.cpp" />
+    <ClCompile Include="..\src\data\SqliteTaskRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteTaskImageRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteCategoryRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteHistoryRepository.cpp" />
+    <ClCompile Include="..\src\data\SqliteStatisticsRepository.cpp" />
+    <ClCompile Include="..\third_party\sqlite\sqlite3.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <ConformanceMode>false</ConformanceMode>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>Default</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <PreprocessorDefinitions>$(SqliteCompileDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup><ClInclude Include="FakeUnitOfWork.h" /><ClInclude Include="..\src\domain\*.h" /><ClInclude Include="..\src\common\*.h" /><ClInclude Include="..\src\config\*.h" /><ClInclude Include="..\src\app\AppState.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -8,12 +8,16 @@
 #include "common/Clock.h"
 #include "common/Result.h"
 #include "core/RepositoryInterfaces.h"
+#include "domain/BodyDocument.h"
 
 namespace todo {
 
 struct CreateTaskCommand {
     std::string title;
     std::string note;
+    // std::nullopt keeps the existing fast-add behaviour exactly: body_doc stays NULL and note is
+    // written as supplied. When present, note is derived from the document by TaskService.
+    std::optional<BodyEdit> body;
     Priority priority{Priority::Medium};
     std::optional<LocalDateTime> dueAt;
     std::optional<std::int64_t> categoryId;
@@ -23,6 +27,9 @@ struct EditTaskCommand {
     std::int64_t id{0};
     std::string title;
     std::string note;
+    // std::nullopt means "this caller did not edit the body": body_doc and task_image are left
+    // completely untouched. Present means note/body_doc/blobs are rewritten in one UoW.
+    std::optional<BodyEdit> body;
     Priority priority{Priority::Medium};
     std::optional<LocalDateTime> dueAt;
     std::optional<std::int64_t> categoryId;

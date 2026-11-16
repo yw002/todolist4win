@@ -13,6 +13,7 @@
 
 #include "common/Result.h"
 #include "core/RepositoryInterfaces.h"
+#include "domain/BodyDocument.h"
 
 namespace todo {
 
@@ -23,7 +24,7 @@ struct WorkspaceSnapshot {
     StatsSnapshot stats;
 };
 
-using WorkerValue = std::variant<std::monostate, Task, Category, TaskPage, HistoryPage, std::vector<CategoryCount>, StatsSnapshot, BatchResult, WorkspaceSnapshot>;
+using WorkerValue = std::variant<std::monostate, Task, Category, TaskPage, HistoryPage, std::vector<CategoryCount>, StatsSnapshot, BatchResult, WorkspaceSnapshot, std::vector<BodyImage>>;
 using DbCommand = std::function<Result<WorkerValue>(IUnitOfWorkFactory&)>;
 
 struct DbCompletion {

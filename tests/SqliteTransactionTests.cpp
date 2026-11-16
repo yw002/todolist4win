@@ -1,6 +1,6 @@
 // Real SQLite transaction tests. A temporary trigger makes the history INSERT abort, proving that
 // "complete the task" and "append the history event" really happen in one transaction and that a
-// failure rolls the task row back to pending. Nothing here touches MySQL or the user profile.
+// failure rolls the task row back to pending. Nothing here touches the user profile.
 
 #include <cstdint>
 #include <filesystem>

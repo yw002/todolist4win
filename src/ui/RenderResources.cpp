@@ -20,12 +20,20 @@ bool RenderResources::Create(ID2D1DeviceContext* context, IDWriteFactory* dwrite
         value->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         value->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
+    // A separate format instance for the body editor: WRAP + top alignment. The three shared
+    // formats above are untouched, so no other control can observe a wrapping state change.
+    if (!format(bodyWrap_, 14.0F, DWRITE_FONT_WEIGHT_NORMAL)) return false;
+    bodyWrap_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    bodyWrap_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    bodyWrap_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    ++deviceGeneration_;  // Create() invalidates derived bitmaps, as does Release() below.
     return true;
 }
 
 void RenderResources::Release() noexcept {
     text_.Reset(); muted_.Reset(); accent_.Reset(); danger_.Reset(); success_.Reset(); warning_.Reset(); panel_.Reset(); border_.Reset();
-    body_.Reset(); title_.Reset(); small_.Reset(); context_.Reset(); dwrite_.Reset();
+    body_.Reset(); title_.Reset(); small_.Reset(); bodyWrap_.Reset(); context_.Reset(); dwrite_.Reset();
+    ++deviceGeneration_;
 }
 
 void RenderResources::ApplyTheme(const ThemePalette& theme) {
@@ -93,10 +101,32 @@ ID2D1SolidColorBrush* RenderResources::WarningBrush() const noexcept { return wa
 ID2D1SolidColorBrush* RenderResources::PanelBrush() const noexcept { return panel_.Get(); }
 ID2D1SolidColorBrush* RenderResources::BorderBrush() const noexcept { return border_.Get(); }
 IDWriteTextFormat* RenderResources::BodyFormat() const noexcept { return body_.Get(); }
-float RenderResources::MeasureTextWidth(const std::wstring& text, float maxWidth) const {
-    if (!dwrite_ || !body_) return 0.0F;
+IDWriteTextFormat* RenderResources::BodyWrapFormat() const noexcept { return bodyWrap_.Get(); }
+
+Microsoft::WRL::ComPtr<IDWriteTextLayout> RenderResources::CreateBodyLayout(const std::wstring& text, float maxWidth, float maxHeight) const {
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(dwrite_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), body_.Get(), maxWidth, 64.0F, &layout))) return 0.0F;
+    if (!dwrite_ || !bodyWrap_ || maxWidth <= 0.0F || maxHeight <= 0.0F) return layout;
+    if (FAILED(dwrite_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), bodyWrap_.Get(),
+                                         maxWidth, maxHeight, &layout))) {
+        layout.Reset();
+        return layout;
+    }
+    // Set on the layout itself as well: an IDWriteTextLayout inherits the format's wrapping at
+    // creation time, but being explicit makes the hit-test metrics match the painted lines.
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    return layout;
+}
+
+void RenderResources::DrawTextLayout(const D2D1_POINT_2F& origin, IDWriteTextLayout* layout, ID2D1Brush* brush) const {
+    if (!context_ || !layout) return;
+    context_->DrawTextLayout(origin, layout, brush ? brush : text_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+float RenderResources::MeasureTextWidth(const std::wstring& text, float maxWidth, bool title) const {
+    if (!dwrite_ || !body_ || !title_) return 0.0F;
+    IDWriteTextFormat* format = title ? title_.Get() : body_.Get();
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(dwrite_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, maxWidth, 64.0F, &layout))) return 0.0F;
     DWRITE_TEXT_METRICS metrics{};
     return SUCCEEDED(layout->GetMetrics(&metrics)) ? metrics.widthIncludingTrailingWhitespace : 0.0F;
 }

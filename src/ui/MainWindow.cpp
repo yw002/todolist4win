@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 #include <d2d1_1helper.h>
 #include <dwmapi.h>
@@ -12,8 +15,10 @@
 
 #include "app/Win32UiDispatcher.h"
 #include "config/AppPaths.h"
+#include "domain/BodyDocument.h"
 #include "resources/resource.h"
 #include "ui/CursorFactory.h"
+#include "ui/AppName.h"
 #include "ui/Dpi.h"
 
 namespace todo {
@@ -23,6 +28,33 @@ constexpr wchar_t kWindowClass[] = L"TodoListWin.MainWindow";
 constexpr UINT_PTR kDeviceRetryTimer = 97;
 // Client coordinate far outside any window, used to clear hover state on every control at once.
 constexpr float kNoHover = -1.0e6F;
+// Posted once a window transition has reached its final rectangle; the finish step resizes the
+// swap chain / hides / minimizes from there instead of doing it inside WM_PAINT.
+constexpr UINT kFinishTransitionMessage = WM_APP + 32;
+constexpr double kAppearSeconds = 0.36;
+constexpr double kCloseSeconds = 0.26;
+constexpr double kMinimizeSeconds = 0.26;
+constexpr double kMaximizeSeconds = 0.22;
+constexpr double kRestoreSeconds = 0.24;
+// Fraction of the final window rectangle the entrance/minimize transition starts from. 0.05 makes
+// the window collapse to a few dozen pixels - visually "gone" - instead of a visible thumbnail.
+constexpr float kTransitionScale = 0.05F;
+constexpr wchar_t kDefaultAppName[] = L"TodoList";
+
+// Normalizes the display name coming from the settings card or from app-name.txt. Control
+// characters would break the title bar and the tray tooltip, so they are dropped rather than shown.
+std::wstring SanitizeAppName(std::wstring value) {
+    std::wstring clean;
+    clean.reserve(value.size());
+    for (wchar_t character : value) {
+        if (character < 0x20 || character == 0x7F) continue;
+        clean.push_back(character);
+    }
+    while (!clean.empty() && (clean.front() == L' ' || clean.front() == L'\t')) clean.erase(clean.begin());
+    while (!clean.empty() && (clean.back() == L' ' || clean.back() == L'\t')) clean.pop_back();
+    if (clean.size() > kMaxAppNameLength) clean.resize(kMaxAppNameLength);
+    return clean.empty() ? std::wstring(kDefaultAppName) : clean;
+}
 }
 
 MainWindow::MainWindow(HINSTANCE instance, ConfigStore& configStore, AppConfig config)
@@ -41,6 +73,8 @@ bool MainWindow::Create() {
     wc.lpszClassName = kWindowClass;
     wc.hIconSm = wc.hIcon;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    appName_ = LoadAppName();
+    maximized_ = config_.window.maximized;
     const UINT storedDpi = config_.window.lastDpi;
     const int initialLeft = Dpi::ToPixels(static_cast<float>(config_.window.leftDip), storedDpi);
     const int initialTop = Dpi::ToPixels(static_cast<float>(config_.window.topDip), storedDpi);
@@ -51,7 +85,7 @@ bool MainWindow::Create() {
     // Without it DWM also allocates a redirection surface for the window, so DWM composition and
     // the swap chain fight over the same pixels: only a corner ends up painted while the rest of
     // the window stays invisible but still swallows every mouse message.
-    hwnd_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP, kWindowClass, L"TodoList for Windows", style, initial.left, initial.top, initial.right - initial.left, initial.bottom - initial.top, nullptr, nullptr, instance_, this);
+    hwnd_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP, kWindowClass, appName_.c_str(), style, initial.left, initial.top, initial.right - initial.left, initial.bottom - initial.top, nullptr, nullptr, instance_, this);
     if (!hwnd_) return false;
     // The window's own DPI is the only trustworthy DIP<->pixel factor: lastDpi comes from the ini
     // file and may describe another monitor, another scaling or an older session. Re-deriving the
@@ -73,9 +107,16 @@ bool MainWindow::Create() {
     // applied to the HWND directly here instead of going through SetTopmost (which needs controller_).
     ApplyTopmostToWindow(config_.window.topmost);
     trayAvailable_ = tray_.Create(hwnd_, wc.hIcon);
+    if (trayAvailable_) tray_.SetTip(appName_);
     ApplyRoundedCorners();
-    if (config_.window.maximized) ShowWindow(hwnd_, SW_MAXIMIZE);
+    // Deliberately no ShowWindow here: the window must stay hidden until ShowMainWindow has shrunk
+    // it to the entrance rectangle. Showing it in Create() was the first-frame flash.
+    SyncBuffersToClient();
+    UpdateRestingRect();
     Layout();
+    // Dialogs own their transitions; they need the window to schedule frames while animating.
+    settings_.SetRequestFrame([this] { RequestRender(); });
+    confirm_.SetRequestFrame([this] { RequestRender(); });
     return true;
 }
 
@@ -89,21 +130,19 @@ void MainWindow::SetController(AppController& controller) {
     // The label is kept only as a fallback for a render target without SVG support; the icon is what
     // is actually drawn (Button::Paint skips the label once the artwork rendered).
     topmostButton_.SetIcon(ui::IconId::Pin); minimizeButton_.SetIcon(ui::IconId::Minus); maximizeButton_.SetIcon(ui::IconId::Square); closeButton_.SetIcon(ui::IconId::Close);
-    themeButton_.SetIcon(ui::IconId::Sun); connectionButton_.SetIcon(ui::IconId::Database); retryButton_.SetIcon(ui::IconId::RotateCw);
-    retryButton_.SetText(L"重试"); connectionButton_.SetText(L"数据库"); topmostButton_.SetText(L"置顶"); themeButton_.SetText(L"主题");
+    themeButton_.SetIcon(ui::IconId::Sun); settingsButton_.SetIcon(ui::IconId::Database); retryButton_.SetIcon(ui::IconId::RotateCw);
+    retryButton_.SetText(L"重试"); settingsButton_.SetText(L"设置"); topmostButton_.SetText(L"置顶"); themeButton_.SetText(L"主题");
     minimizeButton_.SetText(L"—"); maximizeButton_.SetText(L"□"); closeButton_.SetText(L"×");
     topmostButton_.SetOnClick([this] { SetTopmost(!controller_->State().topmost); });
-    minimizeButton_.SetOnClick([this] { ShowWindow(hwnd_, SW_MINIMIZE); });
-    maximizeButton_.SetOnClick([this] { ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE); });
+    minimizeButton_.SetOnClick([this] { StartMinimize(); });
+    maximizeButton_.SetOnClick([this] { ToggleMaximize(); });
     closeButton_.SetOnClick([this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); });
     themeButton_.SetOnClick([this] { const bool dark = theme_.Palette().dark; controller_->SetThemeMode(dark ? ThemeMode::Light : ThemeMode::Dark); theme_.BeginTransition(controller_->State().themeMode, animationClock_.Now()); animationUntil_ = animationClock_.Now() + 0.35; RequestRender(); });
-    connectionButton_.SetOnClick([this] { OpenConnectionSettings(); });
-    for (auto* button : {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_}) button->SetRadius(17.0F);
+    settingsButton_.SetOnClick([this] { OpenSettings(); });
+    for (auto* button : {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &settingsButton_, &retryButton_}) button->SetRadius(17.0F);
     closeButton_.SetDanger(true);
     SetTimer(hwnd_, 99, 5000, nullptr);
-    // Retrying reuses the open worker/factory. It must NOT go through a config round trip: the
-    // in-memory config deliberately carries no password, so only a candidate switch can change the
-    // connection parameters (design section 7).
+    // Retrying reuses the open worker/factory; no credentials or connection strings are involved.
     retryButton_.SetOnClick([this] { controller_->Retry(); });
     // Without a tray icon the window must stay reachable, so closing cannot hide it.
     if (!trayAvailable_) controller_->ShowToast("系统托盘不可用，关闭窗口将直接退出应用");
@@ -119,10 +158,358 @@ void MainWindow::ShowMainWindow() {
         renderer_.ResizeBuffers(client.right, client.bottom, dpi_);
         Layout();
     }
-    ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
-    backdrop_.Enable(hwnd_);
+    const bool wasVisible = IsWindowVisible(hwnd_) != FALSE;
+    if (!wasVisible) {
+        // Put the hidden window at the exact geometry it is going to end up at, then shrink it to the
+        // entrance rectangle. Establishing the final client size before the first ShowWindow is what
+        // makes the swap chain the right size; previously the window was shown full size first and
+        // the WM_SIZE that followed was swallowed by the animation.
+        const RECT target = maximized_ ? WorkAreaRect() : RestoreTargetRect();
+        if (target.right > target.left && target.bottom > target.top) {
+            SetWindowPos(hwnd_, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        SyncBuffersToClient();
+        // Warm the render path while the window is still hidden. The first D2D frame compiles
+        // shaders and rasterizes the icon atlas; doing that after ShowWindow blocked the UI thread
+        // long enough for the entrance animation to skip to its final rectangle (perceived flash).
+        Render();
+        StartAppear(target, true);
+    }
+    ShowWindow(hwnd_, SW_SHOWNORMAL);
     ApplyRoundedCorners();
     SetForegroundWindow(hwnd_);
+    RequestRender();
+}
+
+void MainWindow::StartAppear(const RECT& finalRect, bool placeBeforeShowing) noexcept {
+    rectAnimating_ = false;
+    transition_ = Transition::None;
+    if (!hwnd_ || finalRect.right <= finalRect.left || finalRect.bottom <= finalRect.top) return;
+    if (placeBeforeShowing) {
+        SetWindowPos(hwnd_, nullptr, finalRect.left, finalRect.top, finalRect.right - finalRect.left, finalRect.bottom - finalRect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (!AnimationClock::AnimationsEnabled()) {
+        if (renderer_.HasDeviceResources()) { renderer_.SetVisualScale(1.0F); renderer_.SetVisualOpacity(1.0F); }
+        SyncBuffersToClient();
+        return;
+    }
+    BeginTransition(Transition::Appear, DockRect(finalRect), finalRect, kAppearSeconds);
+    if (rectAnimating_) animationUntil_ = animationClock_.Now() + kAppearSeconds;
+}
+
+void MainWindow::StartAppearFromCurrent() noexcept {
+    // Restoring from the taskbar leaves the HWND at the tiny rectangle the minimize transition
+    // ended on. The swap chain still has the full-size buffers, so the content can grow back without
+    // ever exposing a full-size window for one frame.
+    if (!hwnd_ || IsIconic(hwnd_)) return;
+    RECT current{};
+    if (!GetWindowRect(hwnd_, &current)) return;
+    const RECT target = maximized_ ? WorkAreaRect() : RestoreTargetRect();
+    if (!AnimationClock::AnimationsEnabled()) {
+        SetWindowPos(hwnd_, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        SyncBuffersToClient();
+        return;
+    }
+    const UINT bufferWidth = renderer_.HasDeviceResources() ? renderer_.PixelWidth() : static_cast<UINT>(std::max(1L, target.right - target.left));
+    const UINT bufferHeight = renderer_.HasDeviceResources() ? renderer_.PixelHeight() : static_cast<UINT>(std::max(1L, target.bottom - target.top));
+    BeginTransition(Transition::Appear, current, target, kAppearSeconds, bufferWidth, bufferHeight);
+    if (rectAnimating_) animationUntil_ = animationClock_.Now() + kAppearSeconds;
+}
+
+void MainWindow::StartClose(bool hideToTray) noexcept {
+    if (!hwnd_) return;
+    // A minimized/hidden window has no visible frame to shrink, so those states close immediately.
+    if (!AnimationClock::AnimationsEnabled() || closePending_ || IsIconic(hwnd_) || !IsWindowVisible(hwnd_)) {
+        if (hideToTray) ShowWindow(hwnd_, SW_HIDE);
+        else { exiting_ = true; SaveWindowConfig(); DestroyWindow(hwnd_); }
+        return;
+    }
+    SyncBuffersToClient();
+    RECT current{};
+    GetWindowRect(hwnd_, &current);
+    closePending_ = true;
+    closeToTray_ = hideToTray;
+    closeStart_ = animationClock_.Now();
+    BeginTransition(Transition::Close, current, DockRect(current), kCloseSeconds);
+    if (!rectAnimating_) {
+        // The window could not start the animation (e.g. it lost visibility in between): close now
+        // rather than leaving the process waiting for frames that will never arrive.
+        closePending_ = false;
+        if (hideToTray) ShowWindow(hwnd_, SW_HIDE);
+        else { exiting_ = true; SaveWindowConfig(); DestroyWindow(hwnd_); }
+        return;
+    }
+    animationUntil_ = closeStart_ + kCloseSeconds;
+    RequestRender();
+}
+
+void MainWindow::StartMinimize() noexcept {
+    if (!hwnd_ || rectAnimating_ || IsIconic(hwnd_)) return;
+    if (!AnimationClock::AnimationsEnabled()) { minimizedByAnimation_ = true; ShowWindow(hwnd_, SW_MINIMIZE); return; }
+    SyncBuffersToClient();
+    RECT current{};
+    GetWindowRect(hwnd_, &current);
+    BeginTransition(Transition::Minimize, current, DockRect(current), kMinimizeSeconds);
+    if (rectAnimating_) animationUntil_ = animationClock_.Now() + kMinimizeSeconds;
+}
+
+void MainWindow::ToggleMaximize() noexcept {
+    if (!hwnd_ || rectAnimating_) return;
+    // Do not clear minimizedByAnimation_ here: WM_SIZE(SIZE_RESTORED) consumes it to start the
+    // grow-back animation. Clearing it first made the restored window stay at the minimum size.
+    if (IsIconic(hwnd_)) { ShowWindow(hwnd_, SW_RESTORE); return; }
+    if (maximized_) StartRestore();
+    else StartMaximize();
+}
+
+void MainWindow::StartMaximize() noexcept {
+    if (!hwnd_ || maximized_ || rectAnimating_) return;
+    RECT current{};
+    if (!GetWindowRect(hwnd_, &current)) return;
+    // The current rectangle is the geometry to return to; remember it before the window grows.
+    restingRect_ = current;
+    restingRectValid_ = true;
+    SyncBuffersToClient();
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const UINT bufferWidth = static_cast<UINT>(std::max(1L, client.right));
+    const UINT bufferHeight = static_cast<UINT>(std::max(1L, client.bottom));
+    const RECT workArea = WorkAreaRect();
+    maximized_ = true;
+    ApplyRoundedCorners();
+    UpdateTitleIcons();
+    if (!AnimationClock::AnimationsEnabled()) {
+        SetWindowPos(hwnd_, nullptr, workArea.left, workArea.top, workArea.right - workArea.left, workArea.bottom - workArea.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        SyncBuffersToClient();
+        RequestRender();
+        return;
+    }
+    BeginTransition(Transition::Maximize, current, workArea, kMaximizeSeconds, bufferWidth, bufferHeight);
+    if (rectAnimating_) animationUntil_ = animationClock_.Now() + kMaximizeSeconds;
+}
+
+void MainWindow::StartRestore() noexcept {
+    if (!hwnd_ || !maximized_ || rectAnimating_) return;
+    RECT current{};
+    if (!GetWindowRect(hwnd_, &current)) return;
+    SyncBuffersToClient();
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const UINT bufferWidth = static_cast<UINT>(std::max(1L, client.right));
+    const UINT bufferHeight = static_cast<UINT>(std::max(1L, client.bottom));
+    const RECT target = RestoreTargetRect();
+    maximized_ = false;
+    ApplyRoundedCorners();
+    UpdateTitleIcons();
+    if (!AnimationClock::AnimationsEnabled()) {
+        SetWindowPos(hwnd_, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        SyncBuffersToClient();
+        RequestRender();
+        return;
+    }
+    BeginTransition(Transition::Restore, current, target, kRestoreSeconds, bufferWidth, bufferHeight);
+    if (rectAnimating_) animationUntil_ = animationClock_.Now() + kRestoreSeconds;
+}
+
+void MainWindow::BeginTransition(Transition transition, const RECT& from, const RECT& to, double seconds, UINT bufferWidth, UINT bufferHeight) noexcept {
+    if (!hwnd_ || transition == Transition::None) return;
+    rectAnimFrom_ = from;
+    rectAnimTo_ = to;
+    rectAnimStart_ = animationClock_.Now();
+    rectAnimSeconds_ = std::max(0.01, seconds);
+    transition_ = transition;
+    rectAnimating_ = true;
+    if (bufferWidth > 0 && bufferHeight > 0) {
+        animFinalClientWidth_ = bufferWidth;
+        animFinalClientHeight_ = bufferHeight;
+    } else {
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        animFinalClientWidth_ = static_cast<UINT>(std::max(1L, client.right));
+        animFinalClientHeight_ = static_cast<UINT>(std::max(1L, client.bottom));
+    }
+    animFinalBounds_ = BoundsForClient(animFinalClientWidth_, animFinalClientHeight_);
+    SetWindowPos(hwnd_, nullptr, from.left, from.top, from.right - from.left, from.bottom - from.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    if (renderer_.HasDeviceResources()) {
+        UpdateContentScale();
+        renderer_.SetVisualOpacity(transition == Transition::Appear || transition == Transition::Restore ? 0.0F : 1.0F);
+    }
+    Layout();
+    RequestRender();
+}
+
+void MainWindow::AdvanceWindowRectAnimation(double now) noexcept {
+    if (!rectAnimating_ || !hwnd_) return;
+    const double linear = std::clamp((now - rectAnimStart_) / rectAnimSeconds_, 0.0, 1.0);
+    // Ease-out cubic: quickly leaves the tiny rectangle, then settles into the final rectangle without
+    // the overshoot that would scale the swap chain past 100% and clip the window edges.
+    const float eased = 1.0F - std::pow(1.0F - static_cast<float>(linear), 3.0F);
+    const auto lerp = [eased](LONG from, LONG to) { return from + static_cast<LONG>(std::lround((to - from) * eased)); };
+    RECT rect{lerp(rectAnimFrom_.left, rectAnimTo_.left), lerp(rectAnimFrom_.top, rectAnimTo_.top),
+              lerp(rectAnimFrom_.right, rectAnimTo_.right), lerp(rectAnimFrom_.bottom, rectAnimTo_.bottom)};
+    if (rect.right <= rect.left) rect.right = rect.left + 1;
+    if (rect.bottom <= rect.top) rect.bottom = rect.top + 1;
+    SetWindowPos(hwnd_, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    UpdateContentScale();
+    if (renderer_.HasDeviceResources()) {
+        float opacity = 1.0F;
+        if (transition_ == Transition::Appear || transition_ == Transition::Restore) opacity = eased;
+        else if (transition_ == Transition::Close || transition_ == Transition::Minimize) opacity = 1.0F - eased;
+        renderer_.SetVisualOpacity(opacity);
+    }
+    if (linear >= 1.0) {
+        rectAnimating_ = false;
+        // Finish outside WM_PAINT: closing destroys the HWND and minimizing hands it to the system,
+        // neither of which may run on the paint stack.
+        PostMessageW(hwnd_, kFinishTransitionMessage, 0, 0);
+    }
+}
+
+void MainWindow::FinishTransition() {
+    const Transition finished = transition_;
+    transition_ = Transition::None;
+    if (!hwnd_) return;
+    if (finished == Transition::Close) { FinishCloseAction(); return; }
+    if (finished == Transition::Minimize) {
+        // The window is now a tiny rectangle at the bottom edge. Minimizing from there keeps the
+        // system's own taskbar animation and never exposes a full-size frame. The rectangle stays
+        // tiny on purpose: WM_SIZE(SIZE_RESTORED) grows it back with the same content scale.
+        minimizedByAnimation_ = true;
+        ShowWindow(hwnd_, SW_MINIMIZE);
+        if (renderer_.HasDeviceResources()) { renderer_.SetVisualScale(1.0F); renderer_.SetVisualOpacity(1.0F); }
+        return;
+    }
+    SyncBuffersToClient();
+    ApplyRoundedCorners();
+    RequestRender();
+}
+
+void MainWindow::UpdateContentScale() noexcept {
+    if (!renderer_.HasDeviceResources()) return;
+    if (!rectAnimating_) { renderer_.SetVisualScale(1.0F); renderer_.SetVisualOpacity(1.0F); return; }
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    if (animFinalClientWidth_ == 0 || animFinalClientHeight_ == 0) return;
+    const float scaleX = static_cast<float>(client.right) / static_cast<float>(animFinalClientWidth_);
+    const float scaleY = static_cast<float>(client.bottom) / static_cast<float>(animFinalClientHeight_);
+    if (transition_ == Transition::Maximize || transition_ == Transition::Restore) {
+        // The window aspect ratio changes when it becomes the work area, so the content has to stretch
+        // on both axes; a uniform scale would either clip the bottom or leave empty bands.
+        renderer_.SetVisualStretch(scaleX, scaleY);
+    } else {
+        renderer_.SetVisualScale(scaleX);
+    }
+}
+
+void MainWindow::SyncBuffersToClient() {
+    if (!hwnd_ || !renderer_.HasDeviceResources()) { if (hwnd_) Layout(); return; }
+    // A minimized window reports its tiny restore rectangle as the client. Resizing the swap chain to
+    // that would throw away the full-size buffers the taskbar grow-back animation needs.
+    if (IsIconic(hwnd_) || minimizedByAnimation_) { Layout(); return; }
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const UINT width = static_cast<UINT>(std::max(1L, client.right));
+    const UINT height = static_cast<UINT>(std::max(1L, client.bottom));
+    // This is the fix for the 14 px acrylic band: the swap chain must always have exactly the client
+    // size, including after a transition ends or after ShowWindow has settled a hidden window.
+    if (renderer_.PixelWidth() != width || renderer_.PixelHeight() != height) {
+        const bool ok = renderer_.ResizeBuffers(width, height, dpi_);
+    }
+    if (renderer_.VisualScale() != 1.0F) renderer_.SetVisualScale(1.0F);
+    if (renderer_.VisualOpacity() != 1.0F) renderer_.SetVisualOpacity(1.0F);
+    Layout();
+}
+
+void MainWindow::UpdateRestingRect() noexcept {
+    // A finished transition can leave the HWND at the tiny dock rectangle for a few milliseconds
+    // before the finish message runs (minimize/close). Persisting that rectangle would make the next
+    // restore or launch grow to the minimum size instead of the user's real geometry.
+    if (!hwnd_ || IsIconic(hwnd_) || maximized_ || rectAnimating_ || transition_ != Transition::None || minimizedByAnimation_) return;
+    RECT rect{};
+    if (!GetWindowRect(hwnd_, &rect)) return;
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    restingRect_ = rect;
+    restingRectValid_ = true;
+}
+
+void MainWindow::FinishCloseAction() {
+    closePending_ = false;
+    rectAnimating_ = false;
+    transition_ = Transition::None;
+    if (!hwnd_) return;
+    // The transition ends with the window at the tiny rectangle. Hide first, then restore the resting
+    // geometry while nothing can be seen: SaveWindowConfig and the next ShowMainWindow must never
+    // observe (or persist) the tiny rectangle.
+    ShowWindow(hwnd_, SW_HIDE);
+    if (restingRectValid_) {
+        SetWindowPos(hwnd_, nullptr, restingRect_.left, restingRect_.top, restingRect_.right - restingRect_.left, restingRect_.bottom - restingRect_.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (renderer_.HasDeviceResources()) { renderer_.SetVisualScale(1.0F); renderer_.SetVisualOpacity(1.0F); }
+    SyncBuffersToClient();
+    if (closeToTray_) return;
+    exiting_ = true;
+    SaveWindowConfig();
+    DestroyWindow(hwnd_);
+}
+
+RECT MainWindow::WorkAreaRect() const noexcept {
+    RECT probe{};
+    if (hwnd_ && GetWindowRect(hwnd_, &probe)) { /* use the monitor the window is on */ }
+    else if (restingRectValid_) probe = restingRect_;
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!GetMonitorInfoW(MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST), &monitor)) return probe;
+    return monitor.rcWork;
+}
+
+RECT MainWindow::DockRect(const RECT& reference) const noexcept {
+    const RECT work = WorkAreaRect();
+    const int fullWidth = static_cast<int>(std::max(1L, reference.right - reference.left));
+    const int fullHeight = static_cast<int>(std::max(1L, reference.bottom - reference.top));
+    const int tinyWidth = std::max(1, static_cast<int>(std::lround(fullWidth * kTransitionScale)));
+    const int tinyHeight = std::max(1, static_cast<int>(std::lround(fullHeight * kTransitionScale)));
+    const int centerX = (reference.left + reference.right) / 2;
+    const int left = std::clamp(centerX - tinyWidth / 2, static_cast<int>(work.left), static_cast<int>(work.right) - tinyWidth);
+    const int top = static_cast<int>(work.bottom) - tinyHeight;
+    return RECT{left, top, left + tinyWidth, top + tinyHeight};
+}
+
+RECT MainWindow::RestoreTargetRect() const noexcept {
+    if (restingRectValid_) return ClampToVisibleMonitor(restingRect_);
+    const UINT placementDpi = dpi_ != 0 ? dpi_ : 96U;
+    const int left = Dpi::ToPixels(static_cast<float>(config_.window.leftDip), placementDpi);
+    const int top = Dpi::ToPixels(static_cast<float>(config_.window.topDip), placementDpi);
+    const int width = Dpi::ToPixels(static_cast<float>(config_.window.widthDip), placementDpi);
+    const int height = Dpi::ToPixels(static_cast<float>(config_.window.heightDip), placementDpi);
+    return ClampToVisibleMonitor({left, top, left + width, top + height});
+}
+
+D2D1_RECT_F MainWindow::BoundsForClient(UINT width, UINT height) const noexcept {
+    return {0, 0, Dpi::ToDips(static_cast<long>(width), dpi_), Dpi::ToDips(static_cast<long>(height), dpi_)};
+}
+
+std::wstring MainWindow::LoadAppName() const {
+    std::ifstream stream(AppPaths::Default().AppNamePath(), std::ios::binary);
+    if (!stream) return std::wstring(kDefaultAppName);
+    const std::string bytes((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    return SanitizeAppName(Dpi::Utf8ToWide(bytes));
+}
+
+void MainWindow::SetAppName(const std::string& utf8Name) {
+    appName_ = SanitizeAppName(Dpi::Utf8ToWide(utf8Name));
+    // Roaming profile, next to config.ini: the display name is independent of window layout
+    // settings, so renaming the app never rewrites the user's saved geometry.
+    const std::filesystem::path path = AppPaths::Default().AppNamePath();
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (stream) {
+        const std::string bytes = Dpi::WideToUtf8(appName_);
+        stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    if (hwnd_) {
+        SetWindowTextW(hwnd_, appName_.c_str());
+        tray_.SetTip(appName_);
+    }
     RequestRender();
 }
 
@@ -133,7 +520,12 @@ void MainWindow::ApplyInitialPlacement() noexcept {
     const int top = Dpi::ToPixels(static_cast<float>(config_.window.topDip), placementDpi);
     const int width = Dpi::ToPixels(static_cast<float>(config_.window.widthDip), placementDpi);
     const int height = Dpi::ToPixels(static_cast<float>(config_.window.heightDip), placementDpi);
-    const RECT target = ClampToVisibleMonitor({left, top, left + width, top + height});
+    const RECT normal = ClampToVisibleMonitor({left, top, left + width, top + height});
+    // The normal rectangle is needed even when the window starts maximized: it is the target of the
+    // first restore and the geometry persisted on exit.
+    restingRect_ = normal;
+    restingRectValid_ = true;
+    const RECT target = maximized_ ? WorkAreaRect() : normal;
     SetWindowPos(hwnd_, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
@@ -158,7 +550,7 @@ void MainWindow::ApplyRoundedCorners() noexcept {
     if (SUCCEEDED(dwm)) return;
     RECT client{};
     GetClientRect(hwnd_, &client);
-    if (IsZoomed(hwnd_)) { SetWindowRgn(hwnd_, nullptr, TRUE); return; }
+    if (maximized_ || IsZoomed(hwnd_)) { SetWindowRgn(hwnd_, nullptr, TRUE); return; }
     const int radius = Dpi::ToPixels(28.0F, dpi_);
     HRGN region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, radius, radius);
     if (region) SetWindowRgn(hwnd_, region, TRUE);
@@ -167,6 +559,9 @@ void MainWindow::ShowFromTray(bool newTask) { ShowMainWindow(); if (newTask) Foc
 void MainWindow::FocusNewTask() { if (!controller_) return; controller_->Navigate(Route::AllTasks); ShowMainWindow(); if (taskPage_) taskPage_->FocusNew(); }
 
 D2D1_RECT_F MainWindow::WindowBounds() const noexcept {
+    // During the window-rect animation the HWND is smaller than the content it presents: the layout
+    // stays at the final geometry and the composition visual is scaled instead.
+    if (rectAnimating_) return animFinalBounds_;
     RECT client{};
     GetClientRect(hwnd_, &client);
     return {0, 0, Dpi::ToDips(client.right, dpi_), Dpi::ToDips(client.bottom, dpi_)};
@@ -178,16 +573,16 @@ void MainWindow::Layout() noexcept {
     const float width = bounds.right;
     // Title bar: icons instead of words. Each control is a 34 DIP circle so the row reads as one
     // rhythm; previously the widths followed the label length (38 / 64 / 74 / 70) and "置顶" was
-    // squeezed into the narrowest one, which is what looked broken.
-    retryButton_.SetBounds({width - 378, 12, width - 344, 46});
-    connectionButton_.SetBounds({width - 336, 12, width - 302, 46});
-    topmostButton_.SetBounds({width - 294, 12, width - 260, 46});
-    themeButton_.SetBounds({width - 252, 12, width - 218, 46});
-    // 16 DIP group gap, then the caption buttons, whose positions are dictated by the system's own
-    // hit-test strip and therefore stay where they were.
-    minimizeButton_.SetBounds({width - 202, 12, width - 168, 46});
-    maximizeButton_.SetBounds({width - 160, 12, width - 126, 46});
-    closeButton_.SetBounds({width - 118, 12, width - 84, 46});
+    // squeezed into the narrowest one, which is what looked broken. The whole row is pinned to the
+    // right margin (16 DIP) as one block: 8 DIP inside the caption group and a 16 DIP separator
+    // before the action group, so the icons never float in the middle of a wide title bar.
+    retryButton_.SetBounds({width - 310, 12, width - 276, 46});
+    settingsButton_.SetBounds({width - 268, 12, width - 234, 46});
+    topmostButton_.SetBounds({width - 226, 12, width - 192, 46});
+    themeButton_.SetBounds({width - 184, 12, width - 150, 46});
+    minimizeButton_.SetBounds({width - 134, 12, width - 100, 46});
+    maximizeButton_.SetBounds({width - 92, 12, width - 58, 46});
+    closeButton_.SetBounds({width - 50, 12, width - 16, 46});
     if (navigation_) navigation_->SetBounds({16, 62, 208, bounds.bottom - 16});
     const D2D1_RECT_F content{220, 62, width - 16, bounds.bottom - 16};
     if (taskPage_) taskPage_->SetBounds(content);
@@ -200,6 +595,7 @@ void MainWindow::UpdateTitleIcons() {
     // light) and a light palette shows a moon. Recomputed from the live palette on every frame so the
     // icon follows the 300 ms cross-fade without a second hook in the toggle handler.
     themeButton_.SetIcon(theme_.Palette().dark ? ui::IconId::Sun : ui::IconId::Moon);
+    maximizeButton_.SetIcon(maximized_ ? ui::IconId::Restore : ui::IconId::Square);
 }
 
 void MainWindow::OnStateChanged() {
@@ -208,28 +604,19 @@ void MainWindow::OnStateChanged() {
     const bool writeChanged = state.lastSuccessfulWrite != observedWrite_;
     if (writeChanged) {
         observedWrite_ = state.lastSuccessfulWrite;
-        if (settings_.IsOpen() && state.overlay != Overlay::ConnectionSettings) { settings_.Hide(); state.overlay = Overlay::None; }
+        if (settings_.IsOpen() && state.overlay != Overlay::Settings) { settings_.Hide(); state.overlay = Overlay::None; }
     }
     if (!state.toast.empty() && (state.toast != observedToast_ || writeChanged)) {
         observedToast_ = state.toast;
         toast_.Show(Dpi::Utf8ToWide(state.toast), animationClock_.Now());
     }
-    // A pending data source switch finishes here. `Config().dataSource` only changes when the
-    // candidate probe succeeded AND the configuration/credential were committed, so comparing it
-    // with the requested target is an exact success test - no extra flag has to travel through
-    // AppState. On failure the dialog stays open with the reason shown inside the card.
-    if (switchTarget_ && !state.switching) {
-        const bool committed = controller_->Config().dataSource == *switchTarget_;
-        switchTarget_.reset();
-        if (committed) {
-            settings_.Hide();
-            state.overlay = Overlay::None;
-        } else {
-            settings_.SetError(state.errorMessage);
-        }
-    }
     if (controller_->FlushPendingSearch(false)) SetTimer(hwnd_, 98, 50, nullptr);
     else KillTimer(hwnd_, 98);
+    // Blob bytes arrive asynchronously on the DbWorker. Pushing them whenever state changes keeps
+    // the editor in sync without the dialog ever touching the database itself.
+    if (settings_.IsOpen() && state.overlay == Overlay::TaskEditor) {
+        settings_.SetEditorImages(state.editorImages, state.editorImageError);
+    }
     animationUntil_ = animationClock_.Now() + 0.30;
     RequestRender();
 }
@@ -252,6 +639,12 @@ void MainWindow::Render() {
         }
     }
     if (theme_.Update(now)) animationUntil_ = now + 0.05;
+    // Both overlays own an entrance/exit transition; keep asking for frames while either is moving.
+    if (settings_.Tick(now)) animationUntil_ = std::max(animationUntil_, now + 0.05);
+    if (confirm_.Tick(now)) animationUntil_ = std::max(animationUntil_, now + 0.05);
+    // The entrance/exit is a real window animation: SetWindowPos moves the HWND rectangle from (or
+    // into) the bottom edge of the work area while the composition visual scales the content.
+    AdvanceWindowRectAnimation(now);
     renderer_.Resources().ApplyTheme(theme_.Palette());
     taskPage_->SetVisible(controller_->State().route != Route::History && controller_->State().route != Route::Statistics);
     historyPage_->SetVisible(controller_->State().route == Route::History);
@@ -286,37 +679,36 @@ void MainWindow::Render() {
         resources.DrawRoundRect({16, 13, 46, 44}, 9, resources.AccentBrush());
         context.DrawLine({23, 29}, {29, 35}, resources.TextBrush(), 2.0F);
         context.DrawLine({29, 35}, {40, 22}, resources.TextBrush(), 2.0F);
-        resources.DrawText(L"TodoList", {56, 10, 172, 48}, nullptr, true);
-        // The status bar carries the active data source, so the user can always tell a local database
-        // from a MySQL one without opening the settings (design section 7).
-        const std::wstring sourcePrefix = controller_->State().dataSource == DataSourceKind::MySql ? L"MySQL · " : L"本地 · ";
         std::wstring status;
-        if (controller_->State().switching) status = L"切换数据源中…";
-        else if (controller_->State().loading) status = sourcePrefix + L"加载中";
-        else if (controller_->State().connection == ConnectionState::Online) status = sourcePrefix + L"已连接";
-        else if (controller_->State().readOnly) status = sourcePrefix + L"只读 · 数据可能不是最新";
-        else status = sourcePrefix + L"连接中";
+        if (controller_->State().loading) status = L"本地 · 加载中";
+        else if (controller_->State().connection == ConnectionState::Online) status = L"本地 · 已连接";
+        else if (controller_->State().readOnly) status = L"本地 · 只读 · 数据可能不是最新";
+        else status = L"本地 · 连接中";
         // A missing tray icon must stay visible: it changes what the close button does.
         if (!trayAvailable_) status += L" · 托盘不可用";
-        // 420 DIP wide (180..600) because the longest realistic string - "MySQL · 只读 · 数据可能不是
-        // 最新 · 托盘不可用" - measures 254 DIP and the previous 240 DIP box clipped its tail. The right
-        // edge follows the window so the strip can never run under the action buttons at the 760 DIP
-        // minimum width, and never gets narrower than the old 240 DIP box.
-        const float statusRight = std::max(420.0F, std::min(600.0F, bounds.right - 390.0F));
-        resources.DrawText(status, {180, 15, statusRight, 44}, resources.MutedBrush(), false, true);
+        // The name owns as much of the title strip as its glyphs need. It may grow until the action
+        // cluster on the right; the status follows it and is dropped only when a very long name
+        // leaves no readable room. A fixed 116 DIP box was what clipped earlier long names.
+        const float titleContentRight = std::max(56.0F, bounds.right - 310.0F - 12.0F);
+        const float nameWidth = resources.MeasureTextWidth(appName_, 4096.0F, true);
+        const float nameRight = std::min(56.0F + nameWidth + 2.0F, titleContentRight);
+        const float statusRight = std::max(nameRight, std::min(bounds.right - 350.0F, 820.0F));
+        const float statusGap = 16.0F;
+        const float statusMinWidth = 110.0F;
+        const bool showStatus = nameRight + statusGap + statusMinWidth <= statusRight;
+        resources.DrawText(appName_, {56, 10, showStatus ? nameRight : titleContentRight, 48}, nullptr, true);
+        if (showStatus) {
+            resources.DrawText(status, {nameRight + statusGap, 15, statusRight, 44}, resources.MutedBrush(), false, true);
+        }
         topmostButton_.SetAccent(controller_->State().topmost);
         UpdateTitleIcons();
-        topmostButton_.Paint(context, resources); minimizeButton_.Paint(context, resources); maximizeButton_.Paint(context, resources); closeButton_.Paint(context, resources); themeButton_.Paint(context, resources); connectionButton_.Paint(context, resources); retryButton_.Paint(context, resources);
+        topmostButton_.Paint(context, resources); minimizeButton_.Paint(context, resources); maximizeButton_.Paint(context, resources); closeButton_.Paint(context, resources); themeButton_.Paint(context, resources); settingsButton_.Paint(context, resources); retryButton_.Paint(context, resources);
         navigation_->Paint(context, resources);
         taskPage_->Paint(context, resources); historyPage_->Paint(context, resources); statisticsPage_->Paint(context, resources);
         if (!controller_->State().errorMessage.empty()) {
-            // This used to sit at y=66..96, directly on top of the new-task input row, and it was
-            // painted after taskPage_->Paint() so it covered the text box. Keep it inside the bottom
-            // status strip, right-aligned, where nothing else is drawn. 612 DIP wide, because the
-            // longest credential error ("已保存的 MySQL 凭据无法解密，…") measures 434 DIP and the old
-            // 432 DIP box cut its last character. The text is right-aligned, so the widening only
-            // grows it leftwards into empty glass, never over the footer summary that ends at ~603.
-            const D2D1_RECT_F error{bounds.right - 640, bounds.bottom - 50, bounds.right - 28, bounds.bottom - 14};
+            // Keep the message inside the bottom status strip, right-aligned, where nothing else is
+            // drawn and it can never cover the editor or the footer summary.
+            const D2D1_RECT_F error{bounds.right - 660, bounds.bottom - 56, bounds.right - 34, bounds.bottom - 22};
             resources.DrawText(Dpi::Utf8ToWide(controller_->State().errorMessage), error, resources.DangerBrush(), false, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
         toast_.SetBounds(bounds);
@@ -324,6 +716,19 @@ void MainWindow::Render() {
         settings_.Paint(context, resources);
         confirm_.Paint(context, resources);
     });
+    // Defensive resync: if any WM_SIZE path ever leaves the swap chain smaller than the client (the
+    // original 14 px acrylic band), correct it on the next frame instead of leaving the gray edge.
+    if (!rectAnimating_ && transition_ == Transition::None && !IsIconic(hwnd_) && !minimizedByAnimation_) {
+        RECT client{};
+        if (GetClientRect(hwnd_, &client) && renderer_.HasDeviceResources()) {
+            const UINT width = static_cast<UINT>(std::max(1L, client.right));
+            const UINT height = static_cast<UINT>(std::max(1L, client.bottom));
+            if (renderer_.PixelWidth() != width || renderer_.PixelHeight() != height) {
+                renderer_.ResizeBuffers(width, height, dpi_);
+                Layout();
+            }
+        }
+    }
     if (now < animationUntil_ || toast_.Visible()) scheduler_.RequestFrame();
 }
 void MainWindow::RequestRender() { if (hwnd_) { InvalidateRect(hwnd_, nullptr, FALSE); scheduler_.RequestFrame(); } }
@@ -332,6 +737,14 @@ void MainWindow::OpenTaskEditor(const Task& task) {
     if (controller_->State().readOnly) return;
     controller_->State().overlay = Overlay::TaskEditor;
     settings_.ShowTask(WindowBounds(), task, controller_->State().categories, [this](const EditTaskCommand& command) { controller_->EditTask(command); }, [this] { controller_->State().overlay = Overlay::None; });
+    // Only the keys are needed here: the document itself is parsed by the dialog, and the worker must
+    // never receive the whole JSON or blocks it does not use.
+    std::vector<std::string> keys;
+    if (!task.bodyDoc.empty()) {
+        auto parsed = BodyDocument::Parse(task.bodyDoc);
+        if (parsed.ok()) keys = parsed.value().ImageKeys();
+    }
+    controller_->LoadBodyImages(task.id, keys);
     RequestRender();
 }
 void MainWindow::OpenCategoryEditor(std::int64_t id) {
@@ -357,27 +770,14 @@ void MainWindow::RequestDeleteHistory(const std::vector<std::int64_t>& ids) {
     confirm_.Show(WindowBounds(), L"永久删除历史", L"仅删除所选历史事件，不会修改当前任务。此操作不可撤销。", [this, ids](bool yes) { if (yes) controller_->DeleteHistory(ids); });
     controller_->State().overlay = Overlay::Confirm;
 }
-void MainWindow::OpenConnectionSettings() {
-    if (controller_->State().switching) { controller_->ShowToast("正在切换数据源，请稍候"); return; }
-    controller_->State().overlay = Overlay::ConnectionSettings;
-    // The dialog never receives a password: only the source, the MySQL fields and whether a
-    // credential exists. The local database path is resolved from AppPaths so the dialog can show
-    // the real file and open its folder.
-    DataSourceDraft draft;
-    draft.kind = controller_->State().dataSource;
-    draft.database = controller_->Config().database;
-    draft.database.password.clear();
-    draft.passwordAction = PasswordAction::Keep;
+void MainWindow::OpenSettings() {
+    controller_->State().overlay = Overlay::Settings;
+    // The settings card shows the real SQLite file path and lets the user open its folder. It never
+    // touches the database itself; the controller owns all storage access.
     const std::wstring localPath = AppPaths::Default().LocalDatabasePath().wstring();
-    switchTarget_.reset();
-    settings_.ShowConnection(WindowBounds(), draft, controller_->State().hasSavedCredential, localPath,
-        [this](const DataSourceDraft& next) {
-            // The switch is asynchronous: the probe runs on a candidate worker while this dialog
-            // stays open. OnStateChanged() closes it once the commit has really happened.
-            switchTarget_ = next.kind;
-            controller_->RequestDataSourceSwitch(next);
-        },
-        [this] { controller_->State().overlay = Overlay::None; switchTarget_.reset(); });
+    settings_.ShowSettings(WindowBounds(), localPath, appName_,
+        [this](const std::string& name) { SetAppName(name); },
+        [this] { controller_->State().overlay = Overlay::None; });
     RequestRender();
 }
 
@@ -410,7 +810,7 @@ void MainWindow::SetTopmost(bool value) {
     }
     controller_->SetTopmost(value);
     config_ = controller_->Config();
-    auto saved = configStore_.Save(config_);
+    auto saved = configStore_.SaveUiState(config_);
     if (!saved.ok()) controller_->ShowToast(saved.error().message);
 }
 void MainWindow::SaveWindowConfig() {
@@ -421,17 +821,22 @@ void MainWindow::SaveWindowConfig() {
     const UINT windowDpi = GetDpiForWindow(hwnd_);
     if (windowDpi != 0) dpi_ = windowDpi;
     RECT rect{};
-    WINDOWPLACEMENT placement{sizeof(placement)};
-    GetWindowPlacement(hwnd_, &placement);
-    rect = placement.rcNormalPosition;
+    if ((maximized_ || IsIconic(hwnd_) || rectAnimating_) && restingRectValid_) {
+        // A maximized/minimized/transitioning window is not at its normal geometry; persist the
+        // remembered normal rectangle instead of the work-area or tiny one.
+        rect = restingRect_;
+    } else {
+        GetWindowRect(hwnd_, &rect);
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
     config_ = controller_->Config();
     config_.window.leftDip = Dpi::ToDips(rect.left, dpi_);
     config_.window.topDip = Dpi::ToDips(rect.top, dpi_);
     config_.window.widthDip = Dpi::ToDips(rect.right - rect.left, dpi_);
     config_.window.heightDip = Dpi::ToDips(rect.bottom - rect.top, dpi_);
     config_.window.lastDpi = dpi_;
-    config_.window.maximized = IsZoomed(hwnd_) != FALSE;
-    (void)configStore_.Save(config_);
+    config_.window.maximized = maximized_ || IsZoomed(hwnd_) != FALSE;
+    (void)configStore_.SaveUiState(config_);
 }
 
 void MainWindow::ReleaseMouseCapture() noexcept {
@@ -479,7 +884,7 @@ HCURSOR MainWindow::ResolveCursor() noexcept {
         if (settings_.HitClickable(x, y)) return hand;
         return arrow;
     }
-    ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_};
+    ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &settingsButton_, &retryButton_};
     for (auto* button : titleButtons) {
         if (button->Visible() && button->HitTest(x, y)) return hand;
     }
@@ -499,7 +904,7 @@ HCURSOR MainWindow::ResolveCursor() noexcept {
 void MainWindow::ClearHoverState() noexcept {
     mouseTracking_ = false;
     if (navigation_) navigation_->ClearHover();
-    ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_};
+    ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &settingsButton_, &retryButton_};
     for (auto* button : titleButtons) button->OnMouseMove(kNoHover, kNoHover);
     if (settings_.IsOpen()) settings_.OnMouseMove(kNoHover, kNoHover);
     if (taskPage_) taskPage_->OnMouseMove(kNoHover, kNoHover);
@@ -519,17 +924,29 @@ LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, 
 LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_NCCALCSIZE:
-            // wParam == TRUE means the window is really being resized/moved and the client area has
-            // to be recomputed: keeping the proposed rect gives the frameless client area the full
-            // window rectangle. With wParam == FALSE the caller only queries the current client
-            // rect, so the message must reach DefWindowProcW; answering 0 there would desynchronise
-            // the client rect from the window rect and skew every later geometry calculation.
-            if (wParam == TRUE) return 0;
+            // wParam == TRUE means the client area is being recomputed. Returning 0 with the proposed
+            // window rectangle makes the client area exactly the window rectangle; when the window is
+            // maximized, pin it to the work area so the first frame can never expose a frame inset.
+            if (wParam == TRUE) {
+                // Only pin the client to the work area once the maximized window has actually reached
+                // it. During the maximize/restore animation the HWND is deliberately smaller than the
+                // final rectangle, and pinning here would report a full-size client on every animation
+                // frame, which clipped the content instead of scaling it.
+                if (maximized_ && !rectAnimating_) {
+                    MONITORINFO monitor{sizeof(monitor)};
+                    if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+                        reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam)->rgrc[0] = monitor.rcWork;
+                    }
+                }
+                return 0;
+            }
             break;
         case WM_ERASEBKGND: return 1;
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize = {Dpi::ToPixels(760, dpi_), Dpi::ToPixels(560, dpi_)};
+            // The dock animation deliberately shrinks the window below the user-resize minimum; the
+            // system is only allowed to enforce that minimum outside the animation.
+            info->ptMinTrackSize = rectAnimating_ ? POINT{1, 1} : POINT{Dpi::ToPixels(760, dpi_), Dpi::ToPixels(560, dpi_)};
             MONITORINFO monitor{sizeof(monitor)};
             if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor)) {
                 info->ptMaxPosition.x = monitor.rcWork.left - monitor.rcMonitor.left;
@@ -543,20 +960,40 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd_, &point);
             RECT client{}; GetClientRect(hwnd_, &client);
-            if (!IsZoomed(hwnd_)) {
+            // While the dock animation is running the HWND is not the user's window yet: no resize
+            // borders and no caption dragging until it settles.
+            if (rectAnimating_) return HTCLIENT;
+            if (!maximized_ && !IsZoomed(hwnd_)) {
                 const int border = Dpi::ToPixels(6, dpi_);
                 const bool left = point.x < border, right = point.x >= client.right - border, top = point.y < border, bottom = point.y >= client.bottom - border;
                 if (top && left) return HTTOPLEFT; if (top && right) return HTTOPRIGHT; if (bottom && left) return HTBOTTOMLEFT; if (bottom && right) return HTBOTTOMRIGHT;
                 if (left) return HTLEFT; if (right) return HTRIGHT; if (top) return HTTOP; if (bottom) return HTBOTTOM;
             }
-            if (point.y < Dpi::ToPixels(54, dpi_) && point.x < client.right - Dpi::ToPixels(490, dpi_)) return HTCAPTION;
+            if (point.y < Dpi::ToPixels(54, dpi_) && point.x < client.right - Dpi::ToPixels(320, dpi_)) return HTCAPTION;
             return HTCLIENT;
         }
         case WM_SIZE:
-            // ResizeBuffers also creates the device resources when they are currently missing,
-            // so this must not be skipped just because HasDeviceResources() is false.
-            if (wParam != SIZE_MINIMIZED) renderer_.ResizeBuffers(static_cast<UINT>(LOWORD(lParam)), static_cast<UINT>(HIWORD(lParam)), dpi_);
+            // Restoring from the taskbar: the window was minimized from a tiny rectangle and that
+            // rectangle is still current, so grow back instead of showing a full-size frame.
+            if (wParam == SIZE_RESTORED && minimizedByAnimation_) {
+                minimizedByAnimation_ = false;
+                StartAppearFromCurrent();
+                return 0;
+            }
+            // During a transition the buffers keep the size the transition started from and the
+            // composition visual is scaled; outside it the buffers must always match the client.
+            if (wParam != SIZE_MINIMIZED) {
+                if (rectAnimating_) {
+                    UpdateContentScale();
+                } else {
+                    SyncBuffersToClient();
+                    UpdateRestingRect();
+                }
+            }
             Layout(); ApplyRoundedCorners(); RequestRender(); return 0;
+        case WM_MOVE:
+            if (!rectAnimating_ && transition_ == Transition::None && !maximized_) UpdateRestingRect();
+            return 0;
         case WM_DPICHANGED: {
             dpi_ = HIWORD(wParam);
             const auto* suggested = reinterpret_cast<const RECT*>(lParam);
@@ -589,11 +1026,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             break;
         case WM_LBUTTONDOWN: {
+            // The dock animation presents final-size content scaled down, so client coordinates do
+            // not match the layout until it settles. Swallow input instead of mis-hitting controls.
+            if (rectAnimating_) return 0;
             SetCapture(hwnd_); SetFocus(hwnd_);
             const float x = DipX(lParam), y = DipY(lParam);
             if (confirm_.IsOpen()) { confirm_.OnMouseDown(x, y, static_cast<UINT>(wParam)); return 0; }
             if (settings_.IsOpen()) { settings_.OnMouseDown(x, y, static_cast<UINT>(wParam)); RequestRender(); return 0; }
-            ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_};
+            ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &settingsButton_, &retryButton_};
             for (auto* button : titleButtons) if (button->HitTest(x, y)) { pressedTitle_ = button; button->OnMouseDown(x, y, static_cast<UINT>(wParam)); RequestRender(); return 0; }
             if (navigation_->HitTest(x, y)) navigation_->OnMouseDown(x, y, static_cast<UINT>(wParam));
             else if (taskPage_->Visible()) taskPage_->OnMouseDown(x, y, static_cast<UINT>(wParam));
@@ -602,6 +1042,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             RequestRender(); return 0;
         }
         case WM_MOUSEMOVE: {
+            if (rectAnimating_) return 0;
             if (!mouseTracking_) {
                 // Register for a single WM_MOUSELEAVE so hover state can be cleared when the pointer
                 // leaves the window; the registration has to be renewed after every leave.
@@ -612,13 +1053,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (confirm_.IsOpen()) break;
             if (settings_.IsOpen()) settings_.OnMouseMove(x, y);
             else {
-                ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &connectionButton_, &retryButton_};
+                ui::Control* const titleButtons[] = {&topmostButton_, &minimizeButton_, &maximizeButton_, &closeButton_, &themeButton_, &settingsButton_, &retryButton_};
                 for (auto* button : titleButtons) button->OnMouseMove(x, y);
                 navigation_->OnMouseMove(x, y); taskPage_->OnMouseMove(x, y); historyPage_->OnMouseMove(x, y);
             }
             RequestRender(); return 0;
         }
         case WM_LBUTTONUP: {
+            if (rectAnimating_) { pressedTitle_ = nullptr; ReleaseCapture(); return 0; }
             // Take the pressed control before releasing the capture: ReleaseCapture() synchronously
             // sends WM_CAPTURECHANGED, and the handler for that message clears pressedTitle_, which
             // would otherwise swallow the click of every title-bar button.
@@ -635,11 +1077,26 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             else statisticsPage_->OnMouseUp(x, y);
             RequestRender(); return 0;
         }
-        case WM_LBUTTONDBLCLK: { const float x = DipX(lParam), y = DipY(lParam); if (!settings_.IsOpen() && navigation_->HitTest(x, y)) navigation_->OnDoubleClick(x, y); else if (!settings_.IsOpen() && taskPage_->Visible()) taskPage_->OnDoubleClick(x, y); RequestRender(); return 0; }
+        case WM_SYSCOMMAND: {
+            const UINT command = wParam & 0xFFF0U;
+            // Maximize/restore/minimize are handled here so every path (title button, system menu,
+            // taskbar menu, snap maximize) goes through the same animation and icon state.
+            if (command == SC_MAXIMIZE) { StartMaximize(); return 0; }
+            if (command == SC_MINIMIZE) { StartMinimize(); return 0; }
+            if (command == SC_RESTORE) { ToggleMaximize(); return 0; }
+            break;
+        }
+        case WM_NCLBUTTONDBLCLK:
+            if (static_cast<UINT>(wParam) == HTCAPTION) { ToggleMaximize(); return 0; }
+            break;
+        case WM_LBUTTONDBLCLK: { if (rectAnimating_) return 0; const float x = DipX(lParam), y = DipY(lParam); if (!settings_.IsOpen() && navigation_->HitTest(x, y)) navigation_->OnDoubleClick(x, y); else if (!settings_.IsOpen() && taskPage_->Visible()) taskPage_->OnDoubleClick(x, y); RequestRender(); return 0; }
         case WM_MOUSEWHEEL: {
+            if (rectAnimating_) return 0;
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}; ScreenToClient(hwnd_, &point);
             const float x = Dpi::ToDips(point.x, dpi_), y = Dpi::ToDips(point.y, dpi_);
-            if (!settings_.IsOpen()) { if (taskPage_->Visible()) taskPage_->OnMouseWheel(x, y, GET_WHEEL_DELTA_WPARAM(wParam)); else if (historyPage_->Visible()) historyPage_->OnMouseWheel(x, y, GET_WHEEL_DELTA_WPARAM(wParam)); }
+            if (settings_.IsOpen()) settings_.OnMouseWheel(x, y, GET_WHEEL_DELTA_WPARAM(wParam));
+            else if (taskPage_->Visible()) taskPage_->OnMouseWheel(x, y, GET_WHEEL_DELTA_WPARAM(wParam));
+            else if (historyPage_->Visible()) historyPage_->OnMouseWheel(x, y, GET_WHEEL_DELTA_WPARAM(wParam));
             RequestRender(); return 0;
         }
         case WM_KEYDOWN: {
@@ -686,7 +1143,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             const auto action = tray_.HandleMessage(wParam, lParam);
             if (action == TrayAction::NewTask) ShowFromTray(true);
             else if (action == TrayAction::Open) ShowFromTray(false);
-            else if (action == TrayAction::Exit) { exiting_ = true; SaveWindowConfig(); DestroyWindow(hwnd_); }
+            else if (action == TrayAction::Exit) StartClose(false);
             return 0;
         }
         case WM_CAPTURECHANGED:
@@ -697,9 +1154,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case WM_CLOSE:
             // Hiding into a tray that was never registered would make the app unreachable.
             ReleaseMouseCapture();
-            if (controller_ && trayAvailable_ && controller_->State().closeToTray && !exiting_) ShowWindow(hwnd_, SW_HIDE);
-            else { exiting_ = true; SaveWindowConfig(); DestroyWindow(hwnd_); }
+            if (closePending_) return 0;
+            if (controller_ && trayAvailable_ && controller_->State().closeToTray && !exiting_) StartClose(true);
+            else StartClose(false);
             return 0;
+        case kFinishTransitionMessage: FinishTransition(); return 0;
         case WM_DESTROY: ReleaseMouseCapture(); CursorFactory::Destroy(); tray_.Remove(); scheduler_.Stop(); KillTimer(hwnd_, 98); KillTimer(hwnd_, 99); KillTimer(hwnd_, kDeviceRetryTimer); deviceRetryArmed_ = false; if (exiting_) PostQuitMessage(0); return 0;
         default: break;
     }

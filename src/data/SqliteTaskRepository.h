@@ -8,7 +8,7 @@ struct sqlite3;
 
 namespace todo {
 
-// SQLite implementation of ITaskRepository. Semantics mirror MySqlTaskRepository exactly: the same
+// SQLite implementation of ITaskRepository. Semantics follow the repository contract exactly: the same
 // optimistic-lock revision check, the same keyset pagination through TaskPagination, the same
 // midpoint weight insertion with a NormalizeWeights fallback.
 class SqliteTaskRepository final : public ITaskRepository {

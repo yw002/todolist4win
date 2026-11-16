@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -35,7 +36,7 @@ private:
 
 // RAII prepared statement with typed bind/column helpers. Prepare() must be called and checked
 // before use. Step() distinguishes SQLITE_ROW (true) from SQLITE_DONE (false) so callers can write
-// the same row-loop shape as the MySQL repositories.
+// a compact row loop with typed column access.
 class SqliteStatement {
 public:
     SqliteStatement(sqlite3* db, std::string sql);
@@ -50,6 +51,9 @@ public:
     void BindDouble(int index, double value);
     void BindText(int index, const std::string& value);
     void BindNull(int index);
+    // SQLITE_TRANSIENT: SQLite copies the bytes immediately, so the caller's buffer may die as soon
+    // as Run() returns. An empty vector binds a zero-length BLOB, never NULL.
+    void BindBlob(int index, const std::vector<std::byte>& value);
 
     [[nodiscard]] Result<bool> Step();  // true = a row is available, false = statement finished
     [[nodiscard]] Result<void> Run();   // step to completion for statements that return no rows
@@ -58,6 +62,7 @@ public:
     [[nodiscard]] double ColumnDouble(int index) const;
     [[nodiscard]] std::string ColumnText(int index) const;
     [[nodiscard]] bool ColumnIsNull(int index) const;
+    [[nodiscard]] std::vector<std::byte> ColumnBlob(int index) const;
 
     void Reset();
 

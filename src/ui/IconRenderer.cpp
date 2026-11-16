@@ -144,6 +144,23 @@ constexpr const char* kSquareSvg = R"svg(<!-- @license lucide-static v0.469.0 - 
   <rect width="18" height="18" x="3" y="3" rx="2" />
 </svg>)svg";
 
+constexpr const char* kRestoreSvg = R"svg(<!-- @license lucide-static v0.469.0 - ISC -->
+<svg
+  class="lucide lucide-copy"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+</svg>)svg";
+
 constexpr const char* kCloseSvg = R"svg(<!-- @license lucide-static v0.469.0 - ISC -->
 <svg
   class="lucide lucide-x"
@@ -166,7 +183,7 @@ struct IconSource {
     const char* svg;
 };
 
-constexpr std::array<IconSource, 8> kSources{{
+constexpr std::array<IconSource, 9> kSources{{
     {IconId::Pin, kPinSvg},
     {IconId::Database, kDatabaseSvg},
     {IconId::Sun, kSunSvg},
@@ -174,6 +191,7 @@ constexpr std::array<IconSource, 8> kSources{{
     {IconId::RotateCw, kRotateCwSvg},
     {IconId::Minus, kMinusSvg},
     {IconId::Square, kSquareSvg},
+    {IconId::Restore, kRestoreSvg},
     {IconId::Close, kCloseSvg},
 }};
 

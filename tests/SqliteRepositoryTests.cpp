@@ -74,7 +74,7 @@ void RunSqliteRepositoryTests() {
             Check("application_id is the TDLW magic", ok && applicationId == SqliteSchema::kApplicationId);
             bool versionOk = false;
             const std::int64_t userVersion = PragmaInt(connection.Raw(), "PRAGMA user_version;", versionOk);
-            Check("user_version is 1", versionOk && userVersion == 1);
+            Check("user_version is 2", versionOk && userVersion == SqliteSchema::kSchemaVersion);
         }
     }
 
@@ -112,7 +112,7 @@ void RunSqliteRepositoryTests() {
         {
             SqliteConnection connection(futurePath);
             if (connection.Open().ok()) {
-                connection.Exec("PRAGMA application_id=" + std::to_string(SqliteSchema::kApplicationId) + "; PRAGMA user_version=2;");
+                connection.Exec("PRAGMA application_id=" + std::to_string(SqliteSchema::kApplicationId) + "; PRAGMA user_version=3;");
             }
         }
         SqliteUnitOfWorkFactory futureFactory(futurePath);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include <d2d1_1.h>
@@ -30,7 +31,16 @@ public:
     [[nodiscard]] ID2D1SolidColorBrush* PanelBrush() const noexcept;
     [[nodiscard]] ID2D1SolidColorBrush* BorderBrush() const noexcept;
     [[nodiscard]] IDWriteTextFormat* BodyFormat() const noexcept;
-    [[nodiscard]] float MeasureTextWidth(const std::wstring& text, float maxWidth = 4096.0F) const;
+    // Dedicated WRAP format for the body editor. body_/title_/small_ stay NO_WRAP and are never
+    // mutated by a caller: temporarily flipping a shared format (TextBox.cpp used to do that) is a
+    // global-state hazard across controls drawn in the same frame.
+    [[nodiscard]] IDWriteTextFormat* BodyWrapFormat() const noexcept;
+    [[nodiscard]] Microsoft::WRL::ComPtr<IDWriteTextLayout> CreateBodyLayout(const std::wstring& text, float maxWidth, float maxHeight) const;
+    void DrawTextLayout(const D2D1_POINT_2F& origin, IDWriteTextLayout* layout, ID2D1Brush* brush = nullptr) const;
+    // Incremented in both Create() and Release(). A bitmap cache compares this value to detect a
+    // device loss/rebuild without needing hooks in RenderEngine (resources_ is never replaced).
+    [[nodiscard]] std::uint64_t DeviceGeneration() const noexcept { return deviceGeneration_; }
+    [[nodiscard]] float MeasureTextWidth(const std::wstring& text, float maxWidth = 4096.0F, bool title = false) const;
     [[nodiscard]] float Dpi() const noexcept;
     [[nodiscard]] const ThemePalette& Colors() const noexcept;
 
@@ -48,8 +58,10 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> body_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> title_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> small_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> bodyWrap_;
     ThemePalette colors_{};
     float dpi_{96.0F};
+    std::uint64_t deviceGeneration_{0};
 };
 
 }  // namespace todo

@@ -132,7 +132,7 @@ void RunTaskPaginationTests() {
 
     // --- dueRange takes part in the signature --------------------------------------
     // Closes the only remaining coverage gap reported by QA: AppendFilter binds dueRange at
-    // MySqlTaskRepository.cpp:89-93, so a cached page from a different range must be rejected.
+    // so a cached page from a different range must be rejected.
     {
         TaskQuery base = MakeQuery(Route::AllTasks, t1);
         const std::string withoutRange = TaskPagination::TaskQuerySignature(base);

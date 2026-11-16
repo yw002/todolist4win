@@ -1,9 +1,8 @@
 // Shared repository contract driven through the service layer and IUnitOfWorkFactory only.
 //
 // Nothing here references a concrete database: the SQLite suite calls RunRepositoryContract with a
-// SqliteUnitOfWorkFactory, and the optional MySQL integration suite can call the same function with
-// a MySqlUnitOfWorkFactory. Because the file compiles into the default test project, it must never
-// include MySQL headers or open a connection.
+// SqliteUnitOfWorkFactory. Because the file compiles into the default test project, it must never
+// include a database driver header or open a connection outside the factory.
 
 #include <cmath>
 #include <cstdint>
@@ -21,6 +20,7 @@
 #include "core/HistoryService.h"
 #include "core/StatisticsService.h"
 #include "core/TaskService.h"
+#include "domain/BodyDocument.h"
 #include "domain/TimeRanges.h"
 
 void ReportTest(const char*, const char*, bool, const char*);
@@ -292,4 +292,35 @@ void RunRepositoryContract(const char* suite, todo::IUnitOfWorkFactory& factory)
     auto emptyNow = categories.Delete(work.value().id);
     (void)emptyNow;  // may still be non-empty depending on earlier fixtures; the dedicated SQLite
                      // tests cover the empty case explicitly.
+
+    // --- R1: note is always the pure-text projection of body_doc -------------------
+    // Done at the very end so it cannot disturb the single-task statistics assertions above.
+    {
+        BodyDocument document = BodyDocument::Empty();
+        document.blocks[0].text = "正文第一行\n第二行";
+        CreateTaskCommand command;
+        command.title = "body projection owner";
+        command.note = "this note must be replaced by the service";
+        command.body = BodyEdit{document.ToJson(), {}};
+        auto withBody = tasks.Create(command);
+        Check(suite, "create with body succeeds", withBody.ok(),
+              withBody.ok() ? "" : withBody.error().message.c_str());
+        Check(suite, "note == doc.PlainText(false)", withBody.ok() && withBody.value().note == document.PlainText(false));
+        Check(suite, "body_doc == canonical json", withBody.ok() && withBody.value().bodyDoc == document.ToJson());
+        if (withBody.ok()) {
+            BodyDocument changed = BodyDocument::Empty();
+            changed.blocks[0].text = "改过的正文";
+            EditTaskCommand edit;
+            edit.id = withBody.value().id;
+            edit.title = "body projection owner";
+            edit.note = "stale";
+            edit.expectedRevision = withBody.value().revision;
+            edit.body = BodyEdit{changed.ToJson(), {}};
+            auto edited = tasks.Edit(edit);
+            Check(suite, "edit with body re-derives note", edited.ok() && edited.value().note == changed.PlainText(false));
+            Check(suite, "edit with body replaces body_doc", edited.ok() && edited.value().bodyDoc == changed.ToJson());
+            auto removed = tasks.Delete(edit.id);
+            Check(suite, "body task cleanup succeeds", removed.ok());
+        }
+    }
 }

@@ -9,7 +9,7 @@ struct sqlite3;
 
 namespace todo {
 
-// SQLite implementation of ICategoryRepository, aligned with MySqlCategoryRepository: unique name
+// SQLite implementation of ICategoryRepository: unique name
 // collisions surface as Conflict, a category with tasks cannot be deleted, and the counts list is
 // ordered by name then id.
 class SqliteCategoryRepository final : public ICategoryRepository {

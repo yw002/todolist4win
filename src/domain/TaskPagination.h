@@ -8,7 +8,7 @@
 
 namespace todo::TaskPagination {
 
-// Pure domain helpers for keyset pagination of TaskQuery. No Win32, D2D, SQL, MySQL or clock
+// Pure domain helpers for keyset pagination of TaskQuery. No Win32, D2D, SQL or clock
 // dependency lives here, so the tests can exercise the whole session contract offline.
 
 // Signature of the query's filter set. It must cover every predicate bound by the repository's

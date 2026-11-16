@@ -16,22 +16,15 @@
 
 namespace todo {
 
-AppController::AppController(AppConfig config, std::unique_ptr<DbWorker> worker, std::shared_ptr<IClock> clock, Logger& logger, std::function<void()> changed, DataSourceSwitchPort port)
-    : config_(std::move(config)), worker_(std::move(worker)), clock_(std::move(clock)), changed_(std::move(changed)), logger_(logger), port_(std::move(port)) {
+AppController::AppController(AppConfig config, std::unique_ptr<DbWorker> worker, std::shared_ptr<IClock> clock, Logger& logger, std::function<void()> changed)
+    : config_(std::move(config)), worker_(std::move(worker)), clock_(std::move(clock)), changed_(std::move(changed)), logger_(logger) {
     state_.topmost = config_.window.topmost;
     state_.closeToTray = config_.window.closeToTray;
     state_.completionDisplay = config_.appearance.completionDisplay;
     state_.themeMode = config_.appearance.themeMode;
-    // The data source and the credential state come from the composition root: this class only
-    // mirrors them for the UI (design section 7).
-    state_.dataSource = config_.dataSource;
-    state_.hasSavedCredential = port_.savedCredential ? port_.savedCredential() : false;
 }
 
 AppController::~AppController() {
-    // A candidate only outlives the switch if the window is torn down mid-probe; stopping it here
-    // keeps the destructor order (candidate, then current worker) predictable.
-    if (candidate_) candidate_->Stop();
     if (worker_) worker_->Stop();
 }
 
@@ -114,10 +107,6 @@ void AppController::ShowToast(const std::string& message) { state_.toast = messa
 
 void AppController::Tick() {
     if (!started_) return;
-    // While a switch is in flight the retry ladder and the 60 s statistics refresh must stay quiet:
-    // they belong to the source that is being replaced, and a load started now would be discarded
-    // by the adoption anyway.
-    if (state_.switching) return;
     const auto now = std::chrono::steady_clock::now();
     const bool initializing = std::any_of(pending_.begin(), pending_.end(), [](const auto& item) { return item.second == Pending::Initialize; });
     static constexpr int delays[] = {1, 2, 5, 10, 30};
@@ -133,12 +122,6 @@ void AppController::Tick() {
 }
 
 bool AppController::CanWrite() {
-    if (state_.switching) {
-        // A half-applied switch must never let a write land in the old store.
-        state_.toast = "正在切换数据源，请稍候";
-        changed_();
-        return false;
-    }
     if (state_.readOnly || state_.connection != ConnectionState::Online) { state_.toast = "数据库未连接，当前为只读状态"; changed_(); return false; }
     return true;
 }
@@ -305,6 +288,32 @@ void AppController::LoadMore() {
     }
     LoadTasks(true);
 }
+void AppController::LoadBodyImages(std::int64_t taskId, const std::vector<std::string>& keys) {
+    // Opening a new editor must never show the previous task's blobs, not even for the short window
+    // before the worker answers.
+    state_.editorImages.clear();
+    state_.editorImageError.clear();
+    if (keys.empty()) { changed_(); return; }
+    const auto requestId = Submit(Pending::LoadBodyImages, [taskId, keys](IUnitOfWorkFactory& factory) -> Result<WorkerValue> {
+        // Read only: no Begin/Commit. This is the same shape as TaskService::Query.
+        auto unit = factory.Create();
+        if (!unit.ok()) return Result<WorkerValue>::Failure(unit.error());
+        std::vector<BodyImage> images;
+        images.reserve(keys.size());
+        for (const auto& key : keys) {
+            auto image = unit.value()->Images().Get(taskId, key);
+            if (image.ok()) { images.push_back(std::move(image.value())); continue; }
+            // A blob missing from the local database is a normal state: skip the key and keep
+            // collecting. Only connection/query-level errors fail the whole batch.
+            if (image.error().code == ErrorCode::ImageUnavailable) continue;
+            return Result<WorkerValue>::Failure(image.error());
+        }
+        return Result<WorkerValue>::Success(WorkerValue{std::move(images)});
+    }, true);
+    // Submit() only queues: completions are drained asynchronously, so this key is always in place
+    // before OnCompletions() can see the result.
+    pendingImageKeys_[requestId] = keys;
+}
 void AppController::Refresh() {
     lastReconnect_ = std::chrono::steady_clock::now();
     ++state_.generation;
@@ -337,10 +346,9 @@ void AppController::Refresh() {
 void AppController::RefreshAfterWrite() { ++state_.dataVersion; ++state_.generation; LoadCategories(); LoadStats(); if (state_.route == Route::History) LoadHistory(false); else if (state_.route != Route::Statistics) LoadTasks(false); }
 
 void AppController::Retry() {
-    // Retrying reuses the worker and the factory that are already open, so this works without a
-    // password (Config() deliberately carries none). Only RequestDataSourceSwitch() may change the
-    // connection parameters.
-    if (state_.switching || !worker_) return;
+    // Retrying reuses the worker and the SQLite factory that are already open, so no credentials or
+    // connection strings are involved.
+    if (!worker_) return;
     reconnectAttempts_ = 0;
     state_.errorMessage.clear();
     state_.connection = ConnectionState::Reconnecting;
@@ -349,148 +357,11 @@ void AppController::Retry() {
     changed_();
 }
 
-std::string AppController::SourceLabel() const {
-    return config_.dataSource == DataSourceKind::MySql ? "MySQL" : "本地";
-}
-
-void AppController::RequestDataSourceSwitch(const DataSourceDraft& draft) {
-    if (state_.switching) return;  // one switch at a time; the dialog stays open meanwhile
-    if (!port_.createCandidate) { ShowToast("当前版本不支持切换数据源"); return; }
-    state_.errorMessage.clear();
-    state_.switching = true;
-    readOnlyBeforeSwitch_ = state_.readOnly;
-    state_.readOnly = true;
-    switchDraft_ = draft;
-    // The old worker is deliberately NOT stopped here (design 6.2 step 2): its in-flight reads may
-    // still complete and remain the best data the user can look at, and stopping it would join a
-    // thread that may be inside a query - on the UI thread. It is retired after adoption.
-    auto created = port_.createCandidate(draft);
-    if (!created.ok()) {
-        // Nothing to probe: the password could not be resolved (or no factory could be built).
-        // No candidate, no commit, no change of data source.
-        const AppError& error = created.error();
-        const std::string message = error.code == ErrorCode::CredentialUnavailable
-                                        ? "已保存的数据库密码无法解密，请在设置中重新输入"
-                                        : error.message;
-        FailSwitch({error.code, message, error.nativeCode, error.sqlState});
-        return;
-    }
-    if (!created.value()) { FailSwitch({ErrorCode::Internal, "无法创建数据源连接"}); return; }
-    candidate_ = std::move(created.value());
-    candidate_->Start();
-    state_.toast = "正在测试新数据源…";
-    SubmitProbe();
-    changed_();
-}
-
-void AppController::SubmitProbe() {
-    if (!candidate_) return;
-    // EnsureDatabaseAndSchema() is the cheapest *complete* probe: it opens (or creates) the store,
-    // applies the schema/version check and, for MySQL, performs a real authenticated connection. It
-    // reads no rows, so a probe never leaks another source's data into the visible view.
-    probeRequest_ = candidate_->Submit(state_.generation, [](IUnitOfWorkFactory& factory) -> Result<WorkerValue> {
-        auto ensured = factory.EnsureDatabaseAndSchema();
-        if (!ensured.ok()) return Result<WorkerValue>::Failure(ensured.error());
-        return Result<WorkerValue>::Success(WorkerValue{});
-    }, false);
-}
-
-void AppController::DrainCandidate() {
-    if (!candidate_) return;
-    const auto completions = candidate_->DrainCompletions();
-    for (const auto& completion : completions) {
-        if (probeRequest_ == 0 || completion.requestId != probeRequest_) continue;
-        probeRequest_ = 0;
-        if (!completion.result.ok()) { FailSwitch(completion.result.error()); return; }
-        if (!switchDraft_) { FailSwitch({ErrorCode::Internal, "数据源切换状态已丢失"}); return; }
-        if (!port_.commit) { FailSwitch({ErrorCode::Internal, "无法保存数据源配置"}); return; }
-        // Probe succeeded: this is the first moment at which writing the credential and the INI can
-        // turn a temporarily broken source into the user's new default.
-        auto committed = port_.commit(*switchDraft_);
-        if (!committed.ok()) { FailSwitch(committed.error()); return; }
-        AdoptWorker(std::move(candidate_), committed.value());
-        return;
-    }
-}
-
-void AppController::FailSwitch(const AppError& error) {
-    // The candidate never becomes current. Its only outstanding command has just finished, so the
-    // join inside Stop() is immediate and does not block the UI thread.
-    if (candidate_) {
-        candidate_->Stop();
-        candidate_.reset();
-    }
-    probeRequest_ = 0;
-    switchDraft_.reset();
-    state_.switching = false;
-    state_.readOnly = readOnlyBeforeSwitch_;
-    state_.errorMessage = error.message;
-    state_.toast = "新数据源不可用，仍使用旧数据源：" + error.message;
-    logger_.Error("data_source_switch", error);
-    changed_();
-}
-
-void AppController::AdoptWorker(std::unique_ptr<DbWorker> candidate, const DataSourceCommitResult& committed) {
-    probeRequest_ = 0;
-    switchDraft_.reset();
-    const WindowConfig windowBeforeSwitch = config_.window;
-    const AppearanceConfig appearanceBeforeSwitch = config_.appearance;
-    auto previous = std::move(worker_);
-    worker_ = std::move(candidate);
-    // Everything that described the old store has to go (design 6.2 step 8). Window geometry, theme,
-    // topmost and the completion-display policy are UI preferences, not data, so they survive.
-    pending_.clear();
-    taskCache_.clear();
-    pendingKeyword_.reset();
-    pendingHistoryKeyword_.reset();
-    state_.tasks.clear();
-    state_.history.clear();
-    state_.categories.clear();
-    state_.stats = StatsSnapshot{};
-    state_.lastBatch = BatchResult{};
-    state_.taskCursor.reset();
-    state_.historyCursor.reset();
-    state_.hasTaskNext = false;
-    state_.hasHistoryNext = false;
-    state_.route = Route::AllTasks;
-    state_.categoryId.reset();
-    state_.filter = TaskFilter{};
-    state_.historyFilter = HistoryFilter{};
-    state_.overlay = Overlay::None;
-    state_.focusedControl = FocusedControl::None;
-    state_.errorMessage.clear();
-    state_.connection = ConnectionState::Initializing;
-    state_.readOnly = true;
-    readOnlyBeforeSwitch_ = true;
-    config_ = committed.config;
-    // The commit result describes the data source. Theme, topmost, completion display and window
-    // geometry may be newer in memory than in the INI (they are only flushed on exit), so replacing
-    // them with file values would silently roll the user's UI preferences back.
-    config_.window = windowBeforeSwitch;
-    config_.appearance = appearanceBeforeSwitch;
-    config_.Sanitize();
-    state_.dataSource = config_.dataSource;
-    state_.hasSavedCredential = committed.hasSavedCredential;
-    ++state_.generation;
-    ++state_.dataVersion;
-    reconnectAttempts_ = 0;
-    // switching intentionally stays true: the switch is finished only by the first successful load
-    // of the new source, so the write entry points remain closed until the UI can show real data.
-    if (previous) {
-        // Never Stop() here: the old worker may be in the middle of a query. The composition root
-        // owns the background recycler (design 6.3).
-        if (port_.retire) port_.retire(std::move(previous));
-        else previous->Stop();
-    }
-    Refresh();
-    changed_();
-}
-
 void AppController::ApplyError(const AppError& error) {
     state_.errorMessage = error.message;
     state_.toast = error.message;
     state_.loading = false;
-    if (error.IsConnectionError() || error.code == ErrorCode::AuthenticationFailed || error.code == ErrorCode::PermissionDenied || error.code == ErrorCode::SchemaUnsupported) {
+    if (error.IsConnectionError() || error.code == ErrorCode::PermissionDenied || error.code == ErrorCode::SchemaUnsupported) {
         state_.connection = ErrorCode::SchemaUnsupported == error.code ? ConnectionState::Error : ConnectionState::Degraded;
         state_.readOnly = true;
         reconnectAttempts_ = 0;
@@ -498,9 +369,6 @@ void AppController::ApplyError(const AppError& error) {
 }
 
 void AppController::OnCompletions() {
-    // Candidate completions are drained first: a probe that already succeeded should be adopted
-    // before any further state is derived from the old worker.
-    DrainCandidate();
     if (!worker_) return;
     for (auto& completion : worker_->DrainCompletions()) {
         auto pending = pending_.find(completion.requestId);
@@ -510,18 +378,27 @@ void AppController::OnCompletions() {
         // Cancelled is pure bookkeeping: drop it before the generation check so an old-generation
         // cancelled read still clears loading, and never let it touch state or trigger a reconnect.
         if (!completion.result.ok() && completion.result.error().code == ErrorCode::Cancelled) {
+            if (operation == Pending::LoadBodyImages) pendingImageKeys_.erase(completion.requestId);
             state_.loading = false;
             continue;
         }
         const bool write = operation == Pending::CreateTask || operation == Pending::EditTask || operation == Pending::Toggle || operation == Pending::DeleteTask || operation == Pending::Reorder || operation == Pending::CreateCategory || operation == Pending::UpdateCategory || operation == Pending::DeleteCategory || operation == Pending::Restore || operation == Pending::RestoreBatch || operation == Pending::DeleteHistory;
-        if (!write && completion.generation != state_.generation) continue;
+        if (!write && completion.generation != state_.generation) {
+            if (operation == Pending::LoadBodyImages) pendingImageKeys_.erase(completion.requestId);
+            continue;
+        }
         if (!completion.result.ok()) {
             logger_.Error("db_command", completion.result.error(), completion.requestId);
+            if (operation == Pending::LoadBodyImages) {
+                // Explicit generation guard for the editor path: a slow blob load from an older
+                // generation must never paint into the editor that is open now.
+                if (completion.generation != state_.generation) { pendingImageKeys_.erase(completion.requestId); continue; }
+                pendingImageKeys_.erase(completion.requestId);
+                state_.editorImages.clear();
+                state_.editorImageError = completion.result.error().message;
+                continue;
+            }
             ApplyError(completion.result.error());
-            // A failed first load after adoption must not silently fall back to the old source
-            // (design 6.2 step 9); it only finishes the switch in an error/read-only state, with the
-            // error text and the retry button available to the user.
-            if (operation == Pending::Initialize) state_.switching = false;
             continue;
         }
         state_.errorMessage.clear();
@@ -531,11 +408,8 @@ void AppController::OnCompletions() {
             state_.tasks = data.tasks.items; state_.taskCursor = data.tasks.nextCursor; state_.hasTaskNext = data.tasks.nextCursor.has_value();
             state_.history = data.history.items; state_.historyCursor = data.history.nextCursor; state_.hasHistoryNext = data.history.nextCursor.has_value();
             state_.categories = data.categories; state_.stats = data.stats;
-            state_.connection = ConnectionState::Online; state_.readOnly = false; state_.loading = false; state_.toast = SourceLabel() + "数据源已连接";
+            state_.connection = ConnectionState::Online; state_.readOnly = false; state_.loading = false; state_.toast = "本地数据库已连接";
             reconnectAttempts_ = 0;
-            if (port_.savedCredential) state_.hasSavedCredential = port_.savedCredential();
-            // The new source is really serving now, so the switch is over.
-            state_.switching = false;
             ++state_.dataVersion;
         } else if (operation == Pending::Tasks || operation == Pending::TasksMore) {
             const auto& page = std::get<TaskPage>(value);
@@ -549,6 +423,24 @@ void AppController::OnCompletions() {
             state_.historyCursor = page.nextCursor; state_.hasHistoryNext = page.nextCursor.has_value(); state_.loading = false;
         } else if (operation == Pending::Categories) state_.categories = std::get<std::vector<CategoryCount>>(value);
         else if (operation == Pending::Stats) { state_.stats = std::get<StatsSnapshot>(value); state_.loading = false; ++state_.dataVersion; }
+        else if (operation == Pending::LoadBodyImages) {
+            // Explicit generation guard for the editor path; the generic read guard above already
+            // filters stale results, but this makes the invariant local and obvious.
+            if (completion.generation != state_.generation) { pendingImageKeys_.erase(completion.requestId); continue; }
+            const auto& images = std::get<std::vector<BodyImage>>(value);
+            state_.editorImages = images;
+            auto requested = pendingImageKeys_.find(completion.requestId);
+            std::size_t missing = 0;
+            if (requested != pendingImageKeys_.end()) {
+                for (const auto& key : requested->second) {
+                    if (std::none_of(images.begin(), images.end(), [&key](const BodyImage& item) { return item.key == key; })) ++missing;
+                }
+                pendingImageKeys_.erase(requested);
+            }
+            // The summary is a std::string, not an ErrorCode: a missing blob is a normal state and
+            // must not be mistaken for a connection failure or a lost task row.
+            state_.editorImageError = missing ? "有 " + std::to_string(missing) + " 张图片在本地数据库中不可用" : std::string();
+        }
         else if (operation == Pending::RestoreBatch) {
             state_.lastBatch = std::get<BatchResult>(value); state_.toast = "批量恢复成功 " + std::to_string(state_.lastBatch.Succeeded()) + " 项，失败 " + std::to_string(state_.lastBatch.Failed()) + " 项";
             ++state_.lastSuccessfulWrite; RefreshAfterWrite();

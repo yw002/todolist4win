@@ -10,7 +10,7 @@ struct sqlite3;
 namespace todo {
 
 // SQLite implementation of IHistoryRepository. Pagination uses the shared HistoryPagination
-// signature so MySQL and SQLite cannot drift; append/delete/latest mirror the MySQL semantics.
+// signature; append, delete and latest follow the repository contract.
 class SqliteHistoryRepository final : public IHistoryRepository {
 public:
     explicit SqliteHistoryRepository(sqlite3* db);

@@ -1,6 +1,8 @@
 #include "ui/RenderEngine.h"
 
 #include <algorithm>
+#include <string>
+
 
 #include <d2d1_1helper.h>
 #include <functional>
@@ -62,8 +64,12 @@ bool RenderEngine::CreateDeviceResources(UINT width, UINT height, UINT dpi) {
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
     if (FAILED(factory->CreateSwapChainForComposition(dxgiDevice.Get(), &desc, nullptr, &swapChain_))) return false;
-    if (FAILED(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&compositionDevice_))) || FAILED(compositionDevice_->CreateTargetForHwnd(hwnd_, TRUE, &compositionTarget_)) || FAILED(compositionDevice_->CreateVisual(&compositionVisual_))) return false;
+    if (FAILED(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&compositionDevice_))) || FAILED(compositionDevice_->CreateTargetForHwnd(hwnd_, TRUE, &compositionTarget_)) || FAILED(compositionDevice_->CreateVisual(&compositionVisual_)) || FAILED(compositionDevice_->CreateEffectGroup(&opacityEffect_))) return false;
+    if (FAILED(compositionVisual_->SetEffect(opacityEffect_.Get()))) return false;
     if (FAILED(compositionVisual_->SetContent(swapChain_.Get())) || FAILED(compositionTarget_->SetRoot(compositionVisual_.Get())) || FAILED(compositionDevice_->Commit())) return false;
+    // A recreated visual starts with an identity transform; restore the scale the window animation
+    // had applied before the device was lost.
+    ApplyVisualTransform();
     if (!BindSwapChainTarget()) return false;
     // Never replace resources_: controls cache a RenderResources pointer across frames (TextBox).
     // Rebuild in place so those pointers stay valid for the whole window lifetime.
@@ -100,6 +106,26 @@ void RenderEngine::Render(const std::function<void(ID2D1DeviceContext&, RenderRe
     if (recreateTarget || IsRecoverablePresentError(present)) HandleDeviceLost();
 }
 
+void RenderEngine::SetVisualScale(float scale) { SetVisualStretch(scale, scale); }
+
+void RenderEngine::SetVisualStretch(float scaleX, float scaleY) {
+    visualScaleX_ = std::clamp(scaleX, 0.05F, 4.0F);
+    visualScaleY_ = std::clamp(scaleY, 0.05F, 4.0F);
+    ApplyVisualTransform();
+}
+
+void RenderEngine::SetVisualOpacity(float opacity) {
+    visualOpacity_ = std::clamp(opacity, 0.0F, 1.0F);
+    ApplyVisualTransform();
+}
+
+void RenderEngine::ApplyVisualTransform() {
+    if (!compositionVisual_) return;
+    compositionVisual_->SetTransform(D2D1::Matrix3x2F::Scale(visualScaleX_, visualScaleY_));
+    if (opacityEffect_) opacityEffect_->SetOpacity(visualOpacity_);
+    if (compositionDevice_) compositionDevice_->Commit();
+}
+
 bool RenderEngine::ResizeBuffers(UINT width, UINT height, UINT dpi) {
     if (!swapChain_ || !context_) return CreateDeviceResources(width, height, dpi);
     width_ = std::max(1U, width);
@@ -107,8 +133,8 @@ bool RenderEngine::ResizeBuffers(UINT width, UINT height, UINT dpi) {
     dpi_ = dpi;
     context_->SetTarget(nullptr);
     targetBitmap_.Reset();
-    if (FAILED(swapChain_->ResizeBuffers(2, width_, height_, DXGI_FORMAT_B8G8R8A8_UNORM, 0))) { HandleDeviceLost(); return false; }
-    if (!BindSwapChainTarget()) return false;
+    HRESULT resizeResult = swapChain_->ResizeBuffers(2, width_, height_, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+    if (FAILED(resizeResult)) { HandleDeviceLost(); return false; }
     // Reuse the same RenderResources object; Create() releases its device-bound brushes first.
     return resources_->Create(context_.Get(), dwrite_.Get(), static_cast<float>(dpi_));
 }
@@ -141,6 +167,7 @@ void RenderEngine::ReleaseDeviceResources() noexcept {
     targetBitmap_.Reset();
     context_.Reset();
     d2dDevice_.Reset();
+    opacityEffect_.Reset();
     compositionVisual_.Reset();
     compositionTarget_.Reset();
     compositionDevice_.Reset();

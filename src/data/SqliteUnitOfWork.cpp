@@ -12,7 +12,8 @@ SqliteUnitOfWork::SqliteUnitOfWork(std::unique_ptr<SqliteConnection> connection)
       tasks_(connection_->Raw()),
       categories_(connection_->Raw()),
       history_(connection_->Raw()),
-      statistics_(connection_->Raw()) {}
+      statistics_(connection_->Raw()),
+      images_(connection_->Raw()) {}
 
 SqliteUnitOfWork::~SqliteUnitOfWork() {
     if (active_) Rollback();
@@ -47,6 +48,7 @@ ITaskRepository& SqliteUnitOfWork::Tasks() { return tasks_; }
 ICategoryRepository& SqliteUnitOfWork::Categories() { return categories_; }
 IHistoryRepository& SqliteUnitOfWork::History() { return history_; }
 IStatisticsRepository& SqliteUnitOfWork::Statistics() { return statistics_; }
+ITaskImageRepository& SqliteUnitOfWork::Images() { return images_; }
 
 SqliteUnitOfWorkFactory::SqliteUnitOfWorkFactory(std::filesystem::path path) : path_(std::move(path)) {}
 

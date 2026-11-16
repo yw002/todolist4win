@@ -6,14 +6,17 @@
 //  * Begin() snapshots the shared database so Rollback() can actually undo writes. Without this
 //    the fake would silently keep a half-written state and the "complete + history in one
 //    transaction" contract could not be asserted.
-//  * Everything here is plain C++: no Win32, no Direct2D, no MySQL Connector, no SQL text. The
+//  * Everything here is plain C++: no Win32, no Direct2D, no database driver, no SQL text. The
 //    test project therefore stays linkable without any external dependency.
 //  * The fake deliberately does not enforce business rules; TaskService and TaskRules own those.
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -42,7 +45,7 @@ public:
         return Result<Task>::Success(stored);
     }
 
-    // Mirrors the MySQL repository: optimistic lock on revision, bump on success.
+    // Mirrors the SQLite repository: optimistic lock on revision, bump on success.
     Result<Task> Update(const Task& task, std::uint64_t expectedRevision) override {
         auto it = rows.find(task.id);
         if (it == rows.end()) return Result<Task>::Failure({ErrorCode::NotFound, "task missing"});
@@ -55,8 +58,13 @@ public:
 
     Result<void> DeleteTask(std::int64_t id) override {
         rows.erase(id);
+        // Mirrors fk_task_image_task ON DELETE CASCADE so the offline service tests observe the
+        // same "delete task removes every blob" behaviour as both real repositories.
+        if (onDelete) onDelete(id);
         return Result<void>::Success();
     }
+
+    std::function<void(std::int64_t)> onDelete;
 
     Result<Task> GetByIdForUpdate(std::int64_t id) override {
         auto it = rows.find(id);
@@ -143,6 +151,45 @@ public:
     }
 };
 
+class FakeTaskImageRepository final : public ITaskImageRepository {
+public:
+    using Key = std::pair<std::int64_t, std::string>;
+    std::map<Key, BodyImage> rows;
+    int putCount{0};
+    int deleteUnreferencedCount{0};
+
+    Result<void> Put(std::int64_t taskId, const BodyImage& image) override {
+        const Key key{taskId, image.key};
+        if (rows.find(key) != rows.end()) return Result<void>::Success();  // INSERT OR IGNORE
+        rows[key] = image;
+        ++putCount;
+        return Result<void>::Success();
+    }
+
+    Result<BodyImage> Get(std::int64_t taskId, const std::string& key) override {
+        const auto it = rows.find(Key{taskId, key});
+        if (it == rows.end()) return Result<BodyImage>::Failure({ErrorCode::ImageUnavailable, "图片不可用"});
+        return Result<BodyImage>::Success(it->second);
+    }
+
+    Result<void> DeleteUnreferenced(std::int64_t taskId, const std::vector<std::string>& keys) override {
+        for (auto it = rows.begin(); it != rows.end();) {
+            const bool owned = it->first.first == taskId;
+            const bool referenced = std::find(keys.begin(), keys.end(), it->first.second) != keys.end();
+            if (owned && !referenced) it = rows.erase(it);
+            else ++it;
+        }
+        ++deleteUnreferencedCount;
+        return Result<void>::Success();
+    }
+
+    void DropTask(std::int64_t taskId) {
+        for (auto it = rows.begin(); it != rows.end();) {
+            if (it->first.first == taskId) it = rows.erase(it); else ++it;
+        }
+    }
+};
+
 class FakeStatisticsRepository final : public IStatisticsRepository {
 public:
     Result<StatsSnapshot> GetSnapshot(const TimeRange&, const TimeRange&, const LocalDateTime&) override {
@@ -154,8 +201,11 @@ public:
 struct FakeSnapshot {
     std::map<std::int64_t, Task> tasks;
     std::vector<HistoryEvent> history;
+    std::map<FakeTaskImageRepository::Key, BodyImage> images;
     std::int64_t nextTaskId{0};
     std::int64_t nextHistoryId{0};
+    int imagePutCount{0};
+    int imageDeleteUnreferencedCount{0};
 };
 
 struct FakeDatabase {
@@ -163,6 +213,11 @@ struct FakeDatabase {
     FakeCategoryRepository categories;
     FakeHistoryRepository history;
     FakeStatisticsRepository statistics;
+    FakeTaskImageRepository images;
+
+    FakeDatabase() { tasks.onDelete = [this](std::int64_t id) { images.DropTask(id); }; }
+    FakeDatabase(const FakeDatabase&) = delete;
+    FakeDatabase& operator=(const FakeDatabase&) = delete;
 
     // Call counters exposed to tests so transaction boundaries can be asserted.
     int createCount{0};
@@ -172,14 +227,25 @@ struct FakeDatabase {
     bool failCommit{false};
 
     [[nodiscard]] FakeSnapshot Capture() const {
-        return FakeSnapshot{tasks.rows, history.events, tasks.nextId, history.nextId};
+        FakeSnapshot snapshot;
+        snapshot.tasks = tasks.rows;
+        snapshot.history = history.events;
+        snapshot.images = images.rows;
+        snapshot.nextTaskId = tasks.nextId;
+        snapshot.nextHistoryId = history.nextId;
+        snapshot.imagePutCount = images.putCount;
+        snapshot.imageDeleteUnreferencedCount = images.deleteUnreferencedCount;
+        return snapshot;
     }
 
     void Restore(const FakeSnapshot& snapshot) {
         tasks.rows = snapshot.tasks;
         history.events = snapshot.history;
+        images.rows = snapshot.images;
         tasks.nextId = snapshot.nextTaskId;
         history.nextId = snapshot.nextHistoryId;
+        images.putCount = snapshot.imagePutCount;
+        images.deleteUnreferencedCount = snapshot.imageDeleteUnreferencedCount;
     }
 };
 
@@ -210,6 +276,7 @@ public:
     ICategoryRepository& Categories() override { return database_.categories; }
     IHistoryRepository& History() override { return database_.history; }
     IStatisticsRepository& Statistics() override { return database_.statistics; }
+    ITaskImageRepository& Images() override { return database_.images; }
 
 private:
     FakeDatabase& database_;
@@ -223,19 +290,10 @@ public:
         return Result<std::unique_ptr<IUnitOfWork>>::Success(std::make_unique<FakeUnitOfWork>(database_));
     }
 
-    // T14: lets a data source switch test make the schema probe fail without breaking the rest of
-    // the fake, so "candidate probe failed -> old data source stays" is deterministic. The flag
-    // lives on the factory (not on FakeDatabase) so a test that keeps a raw pointer to the factory
-    // can flip it between attempts - the factory object itself never moves, only the unique_ptr.
-    Result<void> EnsureDatabaseAndSchema() override {
-        if (failEnsure) return Result<void>::Failure({ErrorCode::ConnectionFailed, "simulated schema probe failure"});
-        return Result<void>::Success();
-    }
+    Result<void> EnsureDatabaseAndSchema() override { return Result<void>::Success(); }
 
     [[nodiscard]] FakeDatabase& Db() noexcept { return database_; }
     [[nodiscard]] const FakeDatabase& Db() const noexcept { return database_; }
-
-    bool failEnsure{false};
 
 private:
     FakeDatabase database_;

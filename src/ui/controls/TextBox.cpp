@@ -25,6 +25,11 @@ void TextBox::SetOnChanged(std::function<void(const std::wstring&)> callback) { 
 void TextBox::SetOnSubmit(std::function<void()> callback) { onSubmit_ = std::move(callback); }
 const std::wstring& TextBox::Text() const noexcept { return text_; }
 std::size_t TextBox::Caret() const noexcept { return caret_; }
+void TextBox::InsertText(const std::wstring& value) { Insert(value); }
+void TextBox::SetCaret(std::size_t index) noexcept {
+    caret_ = std::min(index, text_.size());
+    anchor_ = caret_;
+}
 void TextBox::SelectAll() noexcept { anchor_ = 0; caret_ = text_.size(); }
 TextBox::Selection TextBox::SelectedRange() const noexcept { return {std::min(anchor_, caret_), std::max(anchor_, caret_)}; }
 void TextBox::SaveUndo() { if (!undo_.empty() && undo_.back() == text_) return; undo_.push_back(text_); if (undo_.size() > 32) undo_.erase(undo_.begin()); }

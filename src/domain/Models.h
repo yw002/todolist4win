@@ -52,7 +52,7 @@ enum class Route { AllTasks, Today, Overdue, Category, History, Statistics };
 enum class CompletionDisplay { KeepVisible, Archive };
 enum class OperationType { Complete, Uncomplete };
 enum class ConnectionState { Initializing, Online, Degraded, Reconnecting, Error };
-enum class Overlay { None, TaskEditor, CategoryEditor, ConnectionSettings, Confirm };
+enum class Overlay { None, TaskEditor, CategoryEditor, Settings, Confirm };
 enum class CompletionFilter { All, Pending, Completed };
 enum class ThemeMode { System, Light, Dark };
 
@@ -68,6 +68,10 @@ struct Task {
     std::optional<std::int64_t> categoryId;
     std::string title;
     std::string note;
+    // Verbatim body_doc JSON; an empty string means SQL NULL (legacy row, lazily upgraded in memory).
+    // Parsing is deliberately NOT done here: a corrupt or newer-version document must never make a
+    // task row unreadable. The UI parses and degrades to FromLegacyNote(note) on failure.
+    std::string bodyDoc;
     Priority priority{Priority::Medium};
     std::optional<LocalDateTime> dueAt;
     bool completed{false};

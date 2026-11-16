@@ -26,6 +26,7 @@ x64/
 /*.png
 /tmp_profile/
 /tmp_ui/
+/tmp_probe_bin/
 /__pycache__/
 /config.ini.bak-probe
 *.bak-probe

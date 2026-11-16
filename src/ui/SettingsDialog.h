@@ -7,7 +7,11 @@
 
 #include "config/AppConfig.h"
 #include "core/TaskService.h"
+#include "domain/Models.h"
+#include "ui/AnimationClock.h"
 #include "ui/controls/Button.h"
+#include "ui/controls/BodyEditor.h"
+#include "ui/controls/DatePicker.h"
 #include "ui/controls/PopupMenu.h"
 #include "ui/controls/TextBox.h"
 
@@ -19,29 +23,31 @@ public:
     // would report true from the very first frame, Paint would draw the task/category card on top
     // of the navigation panel and MainWindow's WM_LBUTTONDOWN would swallow every click here.
     SettingsDialog() noexcept { visible_ = false; }
-    enum class Mode { None, Task, Category, Connection };
+    enum class Mode { None, Task, Category, Settings };
     void ShowTask(const D2D1_RECT_F& window, const Task& task, const std::vector<CategoryCount>& categories, std::function<void(const EditTaskCommand&)> save, std::function<void()> cancel);
     void ShowCategory(const D2D1_RECT_F& window, const Category* category, std::function<void(std::int64_t, const std::string&, const std::string&)> save, std::function<void(std::int64_t)> remove, std::function<void()> cancel);
-    // Data source settings (design 5.1). This is the minimal evolution of the old
-    // (window, DatabaseConfig, save, cancel) form:
-    //   * `draft` carries the current source in `kind` and the MySQL fields in `database`;
-    //   * `draft.database.password` is NEVER displayed - the password box always starts empty and
-    //     `hasSavedPassword` only decides the placeholder ("saved, leave empty to keep" vs "no saved
-    //     password"). Nothing here can leak a secret back to the screen;
-    //   * `localDatabasePath` is shown verbatim in local mode with an "open containing folder"
-    //     button, because there is no UI to create/backup the local file.
-    // The dialog reports what the user did as a PasswordAction; resolving it is SettingsService's
-    // job, so an empty box can never be mistaken for "keep" anywhere else.
-    void ShowConnection(const D2D1_RECT_F& window, const DataSourceDraft& draft, bool hasSavedPassword, std::wstring localDatabasePath, std::function<void(const DataSourceDraft&)> save, std::function<void()> cancel);
+    // Local storage settings. The application keeps everything in one SQLite file next to the user
+    // profile; this card only shows that path, opens its folder and edits the window title name.
+    void ShowSettings(const D2D1_RECT_F& window, std::wstring localDatabasePath, std::wstring appName, std::function<void(const std::string&)> saveAppName, std::function<void()> cancel);
     void Hide() noexcept;
     [[nodiscard]] bool IsOpen() const noexcept;
-    // Reports a failure that happened after the draft left the dialog (the switch probe and the
-    // commit run asynchronously). The overlay stays open with the user's input intact.
+    // Advances the open/close transition (card scales up from 94% while the scrim fades in, and the
+    // reverse on close). Returns true while another frame is needed; MainWindow keeps the frame
+    // scheduler awake for as long as this (or ModalDialog::Tick) reports true.
+    bool Tick(double now) noexcept;
+    // Lets the owner schedule a frame when a transition starts or stops (MainWindow drives the
+    // frame scheduler and would otherwise never learn that Hide() or a Show* began animating).
+    void SetRequestFrame(std::function<void()> callback) { requestFrame_ = std::move(callback); }
+    // Reports a failure after the card was submitted; the overlay stays open with the user's input.
     void SetError(const std::string& utf8Message);
+    // Async image-load result for the body editor. Called from MainWindow after LoadBodyImages
+    // completes; a null/empty list clears the previous task's pictures.
+    void SetEditorImages(const std::vector<BodyImage>& images, std::string error);
     void Paint(ID2D1DeviceContext& context, RenderResources& resources) override;
     bool OnMouseDown(float x, float y, UINT keyFlags) override;
     bool OnMouseMove(float x, float y) override;
     bool OnMouseUp(float x, float y) override;
+    bool OnMouseWheel(float x, float y, int delta) override;
     bool OnKeyDown(UINT key, bool ctrl, bool shift) override;
     bool OnChar(wchar_t value) override;
     TextBox* ActiveTextBox() noexcept;
@@ -50,11 +56,23 @@ public:
     [[nodiscard]] bool HitClickable(float x, float y) noexcept;
 private:
     void LayoutControls() noexcept;
+    // Starts the appear transition and cancels any in-flight close.
+    void BeginShow() noexcept;
+    // Actually clears the mode/editor state. Hide() defers this until the close transition ends.
+    void FinishHide() noexcept;
+    // 0 = fully closed, 1 = fully open. Linear; Paint() applies the easing.
+    [[nodiscard]] float Transition(double now) const noexcept;
     void Save();
-    // Switches the connection card between the two sources and moves the focus off any field that
-    // just got hidden (otherwise typing would go into an invisible TextBox).
-    void SelectSource(DataSourceKind kind) noexcept;
+    // Opens the shared month calendar next to the due-date button, flipping above the row when the
+    // window is too short. The calendar reports a validated "YYYY-MM-DD" (or an empty string).
+    void ShowDatePicker();
+    void UpdateDueDateText();
+    // Opens the data directory that holds the SQLite file.
     void OpenLocalFolder();
+    // Task mode uses the first two boxes (title and body), the settings card uses field1_ for the
+    // application name, and the category card uses two. Fields() is mode-aware while AllFields()
+    // stays the reset/visibility list.
+    std::vector<TextBox*> AllFields() noexcept;
     std::vector<TextBox*> Fields() noexcept;
     std::vector<Control*> Clickables() noexcept;
     Mode mode_{Mode::None};
@@ -63,15 +81,25 @@ private:
     TextBox field3_;
     TextBox field4_;
     TextBox field5_;
+    // Application display name. It is edited in the settings card and persisted by MainWindow in
+    // the user profile (app-name.txt).
+    TextBox field6_;
+    // Rich body surface: one field-like box that lays out text blocks and inline images. It replaces
+    // field2_ in task mode; field2_ stays as the single-line fallback for the other cards.
+    BodyEditor bodyEditor_;
+    // Set when `body_doc` failed to parse because it was written by a newer schema: the content is
+    // shown read-only and Save is refused instead of silently overwriting it (§11 A12).
+    bool bodyUnsupported_{false};
     Button save_;
     Button cancel_;
     Button priorityButton_;
     Button category_;
     Button remove_;
-    Button sourceLocal_;
-    Button sourceMySql_;
     Button openFolder_;
-    Button clearPassword_;
+    // field3_..field6_ are unused by the current cards; Task mode needs its own date/priority/category
+    // controls instead of retyping those shared fields. The calendar popup is owned by this dialog too.
+    Button dueDateButton_;
+    DatePicker datePicker_;
     PopupMenu categoryMenu_;
     Control* pressed_{nullptr};
     Control* focused_{nullptr};
@@ -79,22 +107,27 @@ private:
     std::vector<CategoryCount> categories_;
     Priority priority_{Priority::Medium};
     std::optional<std::int64_t> categoryId_;
+    // The picked due date, already converted to the domain type. The calendar guarantees a valid
+    // "YYYY-MM-DD", so Save() never has to parse text or show a format error.
+    std::optional<LocalDateTime> dueAt_;
     std::int64_t editCategoryId_{0};
-    // Connection state. `draft_` is the working copy the dialog edits; nothing in it is persisted
-    // until the switch probe succeeds.
-    DataSourceDraft draft_;
-    bool hasSavedPassword_{false};
-    bool passwordCleared_{false};
+    // Settings state: the SQLite path shown in the card. It is display-only.
     std::wstring localPath_;
-    // Card geometry is computed by LayoutControls() (not by Paint()), because the connection card is
-    // taller than the task/category cards and its title has to clear the source selector row.
+    // Card geometry is computed by LayoutControls() (not by Paint()), because the card depends on the
+    // window size and is centred on its own height.
     D2D1_RECT_F card_{0, 0, 0, 0};
     std::function<void(const EditTaskCommand&)> saveTask_;
     std::function<void(std::int64_t, const std::string&, const std::string&)> saveCategory_;
-    std::function<void(const DataSourceDraft&)> saveConnection_;
+    std::function<void(const std::string&)> saveAppName_;
+    std::wstring appName_;
     std::function<void(std::int64_t)> removeCategory_;
     std::function<void()> cancelCallback_;
     std::wstring error_;
+    AnimationClock animationClock_;
+    std::function<void()> requestFrame_;
+    double shownAt_{0.0};
+    double closingAt_{0.0};
+    bool closing_{false};
 };
 
 }  // namespace todo::ui
